@@ -637,7 +637,7 @@ function renderDayTabs(){
     if(s.hidden) return;
     const active = idx===currentSessionIndex;
     html += `<div class="daytab ${active?'active':''}" data-idx="${idx}" draggable="true">
-      <span class="daytab-label" data-idx="${idx}" title="${escapeHtml(s.label)}">${escapeHtml(s.label)}</span>
+      <span class="daytab-label" data-idx="${idx}" title="${escapeHtml(s.label)}">${escapeHtml(s.label)}</span>${settleBadgeHtml(s)}
       <div class="dtdropdown" data-idx="${idx}">
         <button type="button" class="dtbtn" data-action="togglemenu" data-idx="${idx}" title="더보기">⋯</button>
         <div class="dtdropdown-menu" data-idx="${idx}">
@@ -667,7 +667,7 @@ function renderDayTabs(){
     sessions.forEach((s,idx)=>{
       if(!s.hidden) return;
       hh += `<div class="daytab hiddenday" data-idx="${idx}">
-        <span class="daytab-label">${escapeHtml(s.label)}</span>
+        <span class="daytab-label">${escapeHtml(s.label)}</span>${settleBadgeHtml(s)}
         <div class="dtdropdown" data-idx="${idx}">
           <button type="button" class="dtbtn" data-action="togglemenu" data-idx="${idx}" title="더보기">⋯</button>
           <div class="dtdropdown-menu" data-idx="${idx}">
@@ -929,7 +929,7 @@ function newSession(label, state){
 }
 function isDirty(s){ return s.editSeq !== s.savedSeq; }
 function markDayDirtyNoSchedule(s){ if(s) s.editSeq++; }
-function markDayDirty(s){ markDayDirtyNoSchedule(s); scheduleSave(); }
+function markDayDirty(s){ markDayDirtyNoSchedule(s); scheduleSave(); scheduleSettleBadgeRefresh(); }
 function markMetaDirty(){ metaDirty = true; scheduleSave(); }
 function noteDeleted(s){ if(s && s.version > 0) pendingDeletes.push({id: s.id, baseVersion: s.version}); }
 function hasUnsaved(){ return sessions.some(isDirty) || pendingDeletes.length > 0 || orderDirty || metaDirty; }
@@ -1253,7 +1253,7 @@ function confirmPasscode(){
 
 /* ===================== 여러 날짜 합산 정산 =====================
  * 선택한 날짜들의 "최종 처리금액"을 같은 이름끼리 더합니다. (계산은 calc.js의 aggregateSettlement — 서버와 같은 코드)
- * 저장하면 시트의 정산 이력 탭에 그 시점 금액으로 남고, 포함된 날짜 탭에 '정산완료'가 표시됩니다.
+ * 저장하면 시트의 정산 이력 탭에 그 시점 금액으로 남고, 포함된 날짜 탭에 '정산' 배지가 표시됩니다.
  * 정산 뒤에 그 날짜의 금액이 바뀌면 '정산 후 변경'으로 바뀝니다.
  */
 const SETTLE_CANCELED = '취소';
@@ -1268,6 +1268,32 @@ function liveState(s){
   return sessions.indexOf(s) === currentSessionIndex ? collectState() : (s.state || cloneState(baseDefaultState));
 }
 function calcOpts(){ return {roundCount: defaultRoundCount, roundLabels: defaultRoundLabels()}; } // 날짜별 부 개수는 state['round-count']가 우선
+// 날짜 탭 / 📅 목록의 "정산" 배지. 정산 뒤 금액이 바뀌면 주황색 + 안내(툴팁)
+function settleStatusOf(s){
+  const run = s && s.id ? activeRunForDay(s.id) : null;
+  if(!run) return null;
+  return {run, changed: dayChangedSinceSettle(s, run)};
+}
+function settleBadgeHtml(s){
+  const st = settleStatusOf(s);
+  if(!st) return '';
+  const tip = st.changed ? `정산 후 금액이 바뀌었습니다 · ${st.run.name}` : `정산: ${st.run.name}`;
+  return `<span class="settle-badge${st.changed ? ' is-changed' : ''}" title="${escapeHtml(tip)}">정산</span>`;
+}
+// 입력할 때마다 지금 날짜 배지만 다시 계산 (잠깐 모아서)
+let settleBadgeTimer = null;
+function scheduleSettleBadgeRefresh(){
+  if(!settlements.length) return;
+  clearTimeout(settleBadgeTimer);
+  settleBadgeTimer = setTimeout(()=>{
+    const s = sessions[currentSessionIndex]; if(!s) return;
+    const tab = document.querySelector(`#dayTabsBar .daytab[data-idx="${currentSessionIndex}"]`); if(!tab) return;
+    const old = tab.querySelector('.settle-badge');
+    if(old) old.remove();
+    const html = settleBadgeHtml(s);
+    if(html) tab.querySelector('.daytab-label').insertAdjacentHTML('afterend', html);
+  }, 400);
+}
 function dayChangedSinceSettle(s, run){
   const snap = run.details.filter(d=>d.dayId === s.id);
   const agg = LedgerCalc.aggregateSettlement([{id: s.id, label: s.label, state: liveState(s)}], calcOpts());
@@ -1344,7 +1370,7 @@ function renderSettleNew(){
     const r = LedgerCalc.computeSettlement(liveState(s), calcOpts());
     const chips = [];
     if(s.hidden) chips.push('<span class="chip muted">숨김</span>');
-    if(run) chips.push(`<span class="chip">정산완료 · ${escapeHtml(run.name)}</span>`);
+    if(run) chips.push(`<span class="chip">정산 · ${escapeHtml(run.name)}</span>`);
     if(run && dayChangedSinceSettle(s, run)) chips.push('<span class="chip warn">정산 후 변경</span>');
     else if(r.grandCheck !== 0) chips.push('<span class="chip warn">확인필요</span>');
     return `<label class="settle-day${run ? ' disabled' : ''}">
@@ -1399,7 +1425,7 @@ async function saveSettlement(){
   const name = document.getElementById('settleName').value.trim();
   if(!name){ showToast('정산 이름을 입력해주세요.', true); return; }
   if(agg.issues.unbalanced.length && !confirm(`정산 합계가 0이 아닌 날짜가 있습니다:\n${agg.issues.unbalanced.map(x=>`· ${x.label} (${fmtSigned(x.check)})`).join('\n')}\n\n그래도 정산 완료로 저장할까요?`)) return;
-  if(!confirm(`'${name}'\n${days.length}개 날짜, ${agg.totals.length}명의 합계를 정산 완료로 저장할까요?\n저장하면 이 날짜들에 '정산완료'가 표시됩니다.`)) return;
+  if(!confirm(`'${name}'\n${days.length}개 날짜, ${agg.totals.length}명의 합계를 정산 완료로 저장할까요?\n저장하면 이 날짜 탭들에 '정산' 배지가 표시됩니다.`)) return;
   if(!(await flushSave())){ showToast('저장되지 않은 변경이 있어 정산하지 못했습니다. 잠시 후 다시 시도해주세요.', true); return; }
   const agg2 = LedgerCalc.aggregateSettlement(selectedSettleDays(), calcOpts());
   const expected = {};
@@ -1585,10 +1611,10 @@ function renderAllDays(){
   const visible = sessions.map((s, idx)=>({s, idx})).filter(x=>!x.s.hidden && match(x.s));
   const hidden = sessions.map((s, idx)=>({s, idx})).filter(x=>x.s.hidden && match(x.s));
   let h = visible.map(({s, idx})=>`<button type="button" class="day-list-item${idx === currentSessionIndex ? ' current' : ''}" data-idx="${idx}">
-      <span>${escapeHtml(s.label)}</span><span class="meta">${idx === currentSessionIndex ? '보는 중 · ' : ''}${people(s)}</span></button>`).join('');
+      <span>${escapeHtml(s.label)}${settleBadgeHtml(s)}</span><span class="meta">${idx === currentSessionIndex ? '보는 중 · ' : ''}${people(s)}</span></button>`).join('');
   if(hidden.length){
     h += `<div class="day-list-section">숨긴 날짜 (${hidden.length})</div>` + hidden.map(({s, idx})=>`<div class="day-list-row">
-      <button type="button" class="day-list-item" data-idx="${idx}" data-hidden="1" style="opacity:.65;"><span>${escapeHtml(s.label)}</span><span class="meta">${people(s)}</span></button>
+      <button type="button" class="day-list-item" data-idx="${idx}" data-hidden="1" style="opacity:.65;"><span>${escapeHtml(s.label)}${settleBadgeHtml(s)}</span><span class="meta">${people(s)}</span></button>
       <button type="button" class="secondary small" data-unhide="${idx}">숨김 해제</button></div>`).join('');
   }
   if(!visible.length && !hidden.length) h = '<div class="empty-note">검색 결과가 없습니다.</div>';
