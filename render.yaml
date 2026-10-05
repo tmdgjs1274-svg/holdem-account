@@ -1,0 +1,20 @@
+# Render Blueprint — 저장소를 Render에 연결하면 이 설정대로 웹 서비스가 만들어집니다.
+services:
+  - type: web
+    name: holdem-ledger
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: SPREADSHEET_ID
+        sync: false   # 구글 시트 주소의 /d/ 와 /edit 사이 값
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false   # 서비스 계정 키(JSON 파일 내용 전체)
+      - key: ADMIN_PASSCODE
+        sync: false   # 관리자 페이지(/admin) 비밀번호
+      - key: APP_PASSCODE
+        sync: false   # (선택) 장부 접속 비밀번호 — 비워두면 누구나 접속

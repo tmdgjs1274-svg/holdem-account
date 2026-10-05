@@ -1,0 +1,19 @@
+{
+  "name": "holdem-ledger",
+  "version": "2.0.0",
+  "private": true,
+  "description": "홀덤 장부 웹앱 (Express + Google Sheets)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "SHEETS_BACKEND=memory MEMORY_FILE=./.local-sheet.json node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "googleapis": "^144.0.0"
+  }
+}

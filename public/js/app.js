@@ -1,0 +1,1312 @@
+/*
+ * 홀덤 장부 — 화면 스크립트
+ * 계산·화면 동작은 기존 HTML 버전과 동일합니다. 저장/불러오기만 서버(구글 시트) API로 바뀌었습니다.
+ */
+'use strict';
+const MAXP = 9;
+const REBUY_SLOTS = 4; // 바이인(최초) 포함 총 5칸
+const ROUND_LABELS = ['1부','2부','3부'];
+const DEFAULT_BUYIN_OPTIONS = [0,1000,2000,3000,4000,5000,6000];
+const DEFAULT_RANKS = [
+  {label:'1등', ratio:30, normalRatio:60},
+  {label:'2등', ratio:15, normalRatio:30},
+  {label:'3등', ratio:5, normalRatio:10},
+  {label:'-', ratio:0, normalRatio:0},
+];
+const DEFAULT_BOUNTY_LEVELS = [
+  [ {label:'A상',ratio:45,count:1}, {label:'K상',ratio:30,count:2}, {label:'Q상',ratio:25,count:3}, {label:'꽝',ratio:0,count:30} ],
+  [ {label:'A상',ratio:60,count:1}, {label:'K상',ratio:30,count:2}, {label:'Q상',ratio:10,count:4}, {label:'꽝',ratio:0,count:11} ],
+  [ {label:'A상',ratio:60,count:1}, {label:'K상',ratio:30,count:2}, {label:'Q상',ratio:10,count:4}, {label:'꽝',ratio:0,count:8} ],
+];
+
+function el(tag, attrs, html){
+  const e = document.createElement(tag);
+  if(attrs) for(const k in attrs) e.setAttribute(k, attrs[k]);
+  if(html !== undefined) e.innerHTML = html;
+  return e;
+}
+function fmt(n){
+  if(n===null || n===undefined || isNaN(n)) return '0';
+  return Math.round(n).toLocaleString('ko-KR');
+}
+function pname(i){
+  const inp = document.getElementById('p-name-'+i);
+  const v = inp && inp.value.trim();
+  return v ? v : ('참가자'+i);
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---------- Toast notifications (top-right) ---------- */
+function showToast(msg, isError){
+  const container = document.getElementById('toastContainer');
+  if(!container) return;
+  const t = document.createElement('div');
+  t.className = 'toast' + (isError ? ' error' : '');
+  t.textContent = msg;
+  container.appendChild(t);
+  setTimeout(()=>{
+    t.style.opacity = '0';
+    setTimeout(()=> t.remove(), 300);
+  }, 3800);
+}
+
+/* ---------- 1. Participants ---------- */
+function buildParticipantCountSelect(){
+  const sel = document.getElementById('participantCount');
+  for(let n=2;n<=MAXP;n++){
+    const o = el('option',{value:n}, n+'명');
+    if(n===MAXP) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+function buildParticipantTable(){
+  const t = document.getElementById('participantTable');
+  let html = '<tr><th style="width:60px;">번호</th><th>이름</th></tr>';
+  for(let i=1;i<=MAXP;i++){
+    html += `<tr class="prow-${i}"><td class="rowlabel">${i}</td>
+      <td><input type="text" class="name-input" id="p-name-${i}" placeholder="참가자 ${i} 이름" data-role="pname" data-i="${i}"></td></tr>`;
+  }
+  t.innerHTML = html;
+}
+
+/* ---------- 2. Ratios ---------- */
+function buildRankRatioTable(){
+  const t = document.getElementById('rankRatioTable');
+  let html = '<tr><th>등수</th><th>일반게임 비율(%)</th><th>바운티게임 비율(%)</th></tr>';
+  DEFAULT_RANKS.forEach((r,idx)=>{
+    html += `<tr><td><input type="text" id="rank-label-${idx}" value="${r.label}" style="width:70px;"></td>
+      <td><input type="number" id="rank-ratio-normal-${idx}" value="${r.normalRatio}" data-role="rankratio" style="width:70px;"></td>
+      <td><input type="number" id="rank-ratio-${idx}" value="${r.ratio}" data-role="rankratio" style="width:70px;"></td></tr>`;
+  });
+  html += `<tr><td class="rowlabel">바운티 풀</td>
+    <td class="out" style="opacity:.6;">0% (없음)</td>
+    <td><input type="number" id="bounty-ratio-input" value="50" data-role="bountyratio" style="width:70px;"></td></tr>`;
+  t.innerHTML = html;
+}
+
+/* ---------- Rounds (buyin / rank result / bounty) ---------- */
+function buildRound(rIdx){
+  const roundNo = rIdx+1;
+  const label = ROUND_LABELS[rIdx];
+  const container = document.getElementById('roundsContainer');
+  const card = el('div',{class:'card', id:`round-card-${roundNo}`});
+  card.innerHTML = `<h2><span style="flex:1;">${label}</span>
+    <select id="gtype-${roundNo}" data-role="gtype" title="게임 유형" style="width:6.5em; min-width:0; flex:none;">
+      <option value="bounty">바운티</option>
+      <option value="normal">일반</option>
+    </select></h2>`;
+  const body = el('div',{class:'card-body'});
+
+  // Buy-in table + Rank result table side-by-side (wraps on narrow screens)
+  const topFlex = el('div',{class:'flex-row', style:'margin-bottom:16px;'});
+
+  const buyinCell = el('div',{class:'flexcell wide'});
+  buyinCell.innerHTML = `<div class="subhead">바이인</div>`;
+  const buyinTableWrap = el('div',{class:'tablewrap'});
+  let head = '<tr><th class="rowlabel">참가자</th><th>바이인</th><th>리바인1</th><th>리바인2</th><th>리바인3</th><th>리바인4</th><th>합계</th></tr>';
+  let bodyRows = '';
+  for(let i=1;i<=MAXP;i++){
+    bodyRows += `<tr class="prow-${i}"><td class="rowlabel namecell"><span class="pname-${i}">참가자${i}</span></td>`;
+    for(let s=0;s<=REBUY_SLOTS;s++){
+      bodyRows += `<td>${buildBuyinSelectHtml(roundNo,i,s)}</td>`;
+    }
+    bodyRows += `<td class="out" id="buyin-sum-${roundNo}-${i}">0</td></tr>`;
+  }
+  bodyRows += `<tr><td class="rowlabel" colspan="6" style="text-align:right;">${label} 총 바이인 합계</td><td class="out" id="buyin-total-${roundNo}">0</td></tr>`;
+  buyinTableWrap.innerHTML = `<table>${head}${bodyRows}</table>`;
+  buyinCell.appendChild(buyinTableWrap);
+  topFlex.appendChild(buyinCell);
+
+  const rankCell = el('div',{class:'flexcell'});
+  rankCell.innerHTML = `<div class="subhead">${label} 순위 결과</div>`;
+  const rankTableWrap = el('div',{class:'tablewrap'});
+  let rHead = '<tr><th>등수</th><th>참가자</th><th>상금</th></tr>';
+  let rBody = '';
+  for(let r=0;r<4;r++){
+    rBody += `<tr><td class="rowlabel rank-label-out" data-r="${r}">-</td>
+      <td><select id="rankwin-${roundNo}-${r}" data-role="rankwin" data-round="${roundNo}" data-r="${r}"><option value="">선택 안함</option></select></td>
+      <td class="out" id="rankprize-${roundNo}-${r}">0</td></tr>`;
+  }
+  rankTableWrap.innerHTML = `<table>${rHead}${rBody}</table>`;
+  rankCell.appendChild(rankTableWrap);
+  topFlex.appendChild(rankCell);
+
+  body.appendChild(topFlex);
+
+  // 게임 유형이 '일반'일 때 바운티 영역 대신 표시되는 안내문 (bountyWrap 밖에 위치해 바운티 영역을 완전히 숨겨도 계속 보입니다)
+  const gtypeNote = el('div', {id:`bounty-gtype-note-${roundNo}`, class:'hint', style:'display:none; margin:0 0 12px; font-weight:600;'});
+  body.appendChild(gtypeNote);
+
+  // Bounty table (full width — grows with participant count)
+  const bountyWrap = el('div', {id:`bountyWrap-${roundNo}`});
+  bountyWrap.innerHTML = `<div class="hint" style="margin:0 0 4px;">${label} 바운티 풀: <span class="out" id="bounty-pool-${roundNo}">0</span>원 (총 바이인 × 바운티 풀 비율)</div>
+    <div class="hint" style="margin:0 0 8px;">최대개수 반영 비율 합계: <span class="out" id="bounty-fullratiosum-${roundNo}">0%</span></div>
+    <div class="warn" id="bounty-warn-${roundNo}" style="display:none;"></div>`;
+  const bountyTableWrap = el('div',{class:'tablewrap'});
+  let bHead = `<tr><th class="rowlabel">등급</th><th>비율(%)</th><th>최대개수</th><th>사용/최대</th><th>1개당 금액(참고)</th>`;
+  for(let i=1;i<=MAXP;i++){
+    bHead += `<th class="prow-${i} namecell"><span class="pname-${i}">참가자${i}</span></th>`;
+  }
+  bHead += '</tr>';
+  let bBody = '';
+  for(let lv=0;lv<4;lv++){
+    bBody += `<tr><td class="rowlabel"><input type="text" id="bl-label-${roundNo}-${lv}" style="width:60px;"></td>
+      <td><input type="number" id="bl-ratio-${roundNo}-${lv}" data-role="blratio" data-round="${roundNo}" style="width:60px;"></td>
+      <td><input type="number" min="0" id="bl-count-${roundNo}-${lv}" data-role="blcount" data-round="${roundNo}" style="width:60px;"></td>
+      <td class="out" id="bl-used-${roundNo}-${lv}">0 / 0</td>
+      <td class="out" id="bl-unit-${roundNo}-${lv}">0</td>`;
+    for(let i=1;i<=MAXP;i++){
+      bBody += `<td class="prow-${i}"><input type="number" min="0" value="0" id="bg-${roundNo}-${lv}-${i}" data-role="bgrid" data-round="${roundNo}" data-lv="${lv}" style="width:50px;"></td>`;
+    }
+    bBody += '</tr>';
+  }
+  bBody += `<tr><td class="rowlabel" colspan="5" style="text-align:right;">참가자별 바운티 총액</td>`;
+  for(let i=1;i<=MAXP;i++){
+    bBody += `<td class="out prow-${i}" id="bounty-ptotal-${roundNo}-${i}">0</td>`;
+  }
+  bBody += '</tr>';
+  bountyTableWrap.innerHTML = `<table>${bHead}${bBody}</table>`;
+  bountyWrap.appendChild(bountyTableWrap);
+  body.appendChild(bountyWrap);
+
+  card.appendChild(body);
+  container.appendChild(card);
+
+  // fill defaults for bounty levels
+  DEFAULT_BOUNTY_LEVELS[rIdx].forEach((lvl,idx)=>{
+    document.getElementById(`bl-label-${roundNo}-${idx}`).value = lvl.label;
+    document.getElementById(`bl-ratio-${roundNo}-${idx}`).value = lvl.ratio;
+    document.getElementById(`bl-count-${roundNo}-${idx}`).value = lvl.count;
+  });
+}
+
+function buildBuyinSelectHtml(roundNo,i,slot){
+  let opts = '';
+  DEFAULT_BUYIN_OPTIONS.forEach(v=>{
+    opts += `<option value="${v}">${v===0?'-':v.toLocaleString('ko-KR')}</option>`;
+  });
+  return `<select id="buyin-${roundNo}-${i}-${slot}" data-role="buyin" data-round="${roundNo}">${opts}</select>`;
+}
+
+/* ---------- Final table ---------- */
+function buildFinalTable(){
+  const t = document.getElementById('finalTable');
+  let head = '<tr><th class="rowlabel">항목</th>';
+  for(let i=1;i<=MAXP;i++) head += `<th class="prow-${i} namecell"><span class="pname-${i}">참가자${i}</span></th>`;
+  head += '</tr>';
+  let rows = '';
+  rows += rowFinal('총 바이인','final-buyin');
+  for(let r=1;r<=roundCount;r++){
+    rows += rowFinal(ROUND_LABELS[r-1]+' 상금','final-prize-'+r);
+    rows += rowFinal(ROUND_LABELS[r-1]+' 바운티','final-bounty-'+r, false, `final-bounty-row-${r}`);
+  }
+  rows += rowFinal('최종 처리금액','final-total', true);
+  t.innerHTML = head + rows;
+}
+function rowFinal(label, idPrefix, bold, trId){
+  let r = `<tr${trId?` id="${trId}"`:''}><td class="rowlabel"${bold?' style="font-weight:800;"':''}>${label}</td>`;
+  for(let i=1;i<=MAXP;i++){
+    r += `<td class="out prow-${i}" id="${idPrefix}-${i}">0</td>`;
+  }
+  r += '</tr>';
+  return r;
+}
+
+/* ---------- Recalc ---------- */
+function num(id){
+  const e = document.getElementById(id);
+  if(!e) return 0;
+  const v = parseFloat(e.value);
+  return isNaN(v) ? 0 : v;
+}
+function strval(id){
+  const e = document.getElementById(id);
+  return e ? e.value : '';
+}
+
+function updateVisibility(){
+  const n = parseInt(document.getElementById('participantCount').value,10);
+  for(let i=1;i<=MAXP;i++){
+    document.querySelectorAll('.prow-'+i).forEach(elm=>{
+      const show = i<=n;
+      elm.style.display = show ? '' : 'none';
+    });
+  }
+  return n;
+}
+
+function updateNamesAndSelects(n){
+  // update pname spans
+  for(let i=1;i<=MAXP;i++){
+    document.querySelectorAll('.pname-'+i).forEach(s=> s.textContent = pname(i));
+  }
+  // update rank-win selects options
+  for(let r=1;r<=roundCount;r++){
+    for(let rr=0;rr<4;rr++){
+      const sel = document.getElementById(`rankwin-${r}-${rr}`);
+      if(!sel) continue;
+      const cur = sel.value;
+      let html = '<option value="">선택 안함</option>';
+      for(let i=1;i<=n;i++){
+        html += `<option value="${i}">${pname(i)}</option>`;
+      }
+      sel.innerHTML = html;
+      if([...sel.options].some(o=>o.value===cur)) sel.value = cur;
+    }
+  }
+  // update rank label cells
+  for(let rr=0;rr<4;rr++){
+    const lbl = document.getElementById('rank-label-'+rr).value || '-';
+    document.querySelectorAll(`.rank-label-out[data-r="${rr}"]`).forEach(td=> td.textContent = lbl);
+  }
+}
+
+function recalcAll(){
+  const n = updateVisibility();
+  updateNamesAndSelects(n);
+
+  // 프라이즈 비율 — 일반게임 / 바운티게임 각각 별도로 설정 (모든 부 공통, 게임 유형에 따라 선택 적용)
+  let bountyRankRatios = [0,1,2,3].map(r=>num('rank-ratio-'+r)/100);
+  let bountyRankSum = bountyRankRatios.reduce((a,b)=>a+b,0);
+  let bountyRatio = num('bounty-ratio-input')/100;
+  const bountyRatioTotal = bountyRankSum + bountyRatio;
+  const warnEl = document.getElementById('ratioWarning');
+  if(Math.abs(bountyRatioTotal-1) > 0.0005){
+    warnEl.style.display='';
+    warnEl.textContent = `[바운티게임] 등수 비율 합계(${(bountyRankSum*100).toFixed(1)}%) + 바운티 풀 비율(${(bountyRatio*100).toFixed(1)}%) = ${(bountyRatioTotal*100).toFixed(1)}% — 100%가 되어야 정확히 소진됩니다.`;
+  } else {
+    warnEl.style.display='none';
+  }
+  document.getElementById('bountyRatioBox').innerHTML =
+    `바운티게임 — 등수 비율 합계: <b>${(bountyRankSum*100).toFixed(1)}%</b> + 바운티 풀 비율: <b>${(bountyRatio*100).toFixed(1)}%</b> = <b class="${Math.abs(bountyRatioTotal-1)<0.0005?'pos':'neg'}">${(bountyRatioTotal*100).toFixed(1)}%</b>`;
+
+  let normalRankRatios = [0,1,2,3].map(r=>num('rank-ratio-normal-'+r)/100);
+  let normalRankSum = normalRankRatios.reduce((a,b)=>a+b,0);
+  const warnElNormal = document.getElementById('ratioWarningNormal');
+  if(Math.abs(normalRankSum-1) > 0.0005){
+    warnElNormal.style.display='';
+    warnElNormal.textContent = `[일반게임] 등수 비율 합계(${(normalRankSum*100).toFixed(1)}%) — 바운티가 없으므로 100%가 되어야 합니다.`;
+  } else {
+    warnElNormal.style.display='none';
+  }
+  document.getElementById('normalRatioBox').innerHTML =
+    `일반게임 — 등수 비율 합계: <b class="${Math.abs(normalRankSum-1)<0.0005?'pos':'neg'}">${(normalRankSum*100).toFixed(1)}%</b> (바운티 없음)`;
+
+  // final accumulators
+  const finalBuyin = Array(MAXP+1).fill(0);
+  const finalPrize = Array.from({length: roundCount+1}, ()=>({}));
+  const finalBounty = Array.from({length: roundCount+1}, ()=>({}));
+  for(let i=1;i<=MAXP;i++){
+    for(let round=1; round<=roundCount; round++){ finalPrize[round][i]=0; finalBounty[round][i]=0; }
+  }
+
+  for(let round=1;round<=roundCount;round++){
+    // buy-in sums
+    let roundTotal = 0;
+    for(let i=1;i<=n;i++){
+      let sum = 0;
+      for(let s=0;s<=REBUY_SLOTS;s++){
+        sum += num(`buyin-${round}-${i}-${s}`);
+      }
+      finalBuyin[i] += sum;
+      roundTotal += sum;
+      const c = document.getElementById(`buyin-sum-${round}-${i}`);
+      if(c) c.textContent = fmt(sum);
+    }
+    document.getElementById(`buyin-total-${round}`).textContent = fmt(roundTotal);
+
+    // 게임 유형: '일반'이면 일반게임 비율(바운티 없음)을, '바운티'면 바운티게임 비율을 적용합니다.
+    const gtype = strval(`gtype-${round}`) || 'bounty';
+    let effRankRatios, effBountyRatio;
+    if(gtype === 'normal'){
+      effRankRatios = normalRankRatios;
+      effBountyRatio = 0;
+    } else {
+      effRankRatios = bountyRankRatios;
+      effBountyRatio = bountyRatio;
+    }
+    const gtypeNoteEl = document.getElementById(`bounty-gtype-note-${round}`);
+    const bountyWrapEl = document.getElementById(`bountyWrap-${round}`);
+    if(gtypeNoteEl){
+      if(gtype === 'normal'){
+        gtypeNoteEl.style.display = '';
+        gtypeNoteEl.textContent = `이 부는 게임 유형이 "일반"이라 바운티 없이, "일반게임 비율" 설정대로 바이인 전액이 순위 상금으로만 배분됩니다.`;
+      } else {
+        gtypeNoteEl.style.display = 'none';
+      }
+    }
+    if(bountyWrapEl) bountyWrapEl.style.display = (gtype === 'normal') ? 'none' : '';
+    // 최종 처리금액 표에서도 일반게임인 부는 바운티가 존재하지 않으므로 "N부 바운티" 행 자체를 숨깁니다.
+    const finalBountyRowEl = document.getElementById(`final-bounty-row-${round}`);
+    if(finalBountyRowEl) finalBountyRowEl.style.display = (gtype === 'normal') ? 'none' : '';
+
+    // rank prizes
+    for(let rr=0;rr<4;rr++){
+      const ratio = effRankRatios[rr];
+      const amount = roundTotal * ratio;
+      document.getElementById(`rankprize-${round}-${rr}`).textContent = fmt(amount);
+      const winner = strval(`rankwin-${round}-${rr}`);
+      if(winner){
+        finalPrize[round][winner] = (finalPrize[round][winner]||0) + amount;
+      }
+    }
+
+    // bounty pool
+    const bountyPool = roundTotal * effBountyRatio;
+    document.getElementById(`bounty-pool-${round}`).textContent = fmt(bountyPool);
+
+    const levelRatios = [];
+    for(let lv=0;lv<4;lv++){
+      const ratio = num(`bl-ratio-${round}-${lv}`)/100;
+      levelRatios.push(ratio);
+      const unit = bountyPool*ratio;
+      const uEl = document.getElementById(`bl-unit-${round}-${lv}`);
+      if(uEl) uEl.textContent = fmt(unit);
+    }
+
+    const usedByLevel = [0,0,0,0];
+    for(let i=1;i<=n;i++){
+      let pBounty = 0;
+      for(let lv=0;lv<4;lv++){
+        const cnt = num(`bg-${round}-${lv}-${i}`);
+        usedByLevel[lv] += cnt;
+        pBounty += cnt * levelRatios[lv] * bountyPool;
+      }
+      finalBounty[round][i] = pBounty;
+      const bEl = document.getElementById(`bounty-ptotal-${round}-${i}`);
+      if(bEl) bEl.textContent = fmt(pBounty);
+    }
+
+    // 최대개수 반영 비율 합계 표시 (비율 × 최대개수의 합)
+    let fullRatioSumPct = 0;
+    for(let lv=0;lv<4;lv++){
+      const maxCountForRatio = num(`bl-count-${round}-${lv}`);
+      fullRatioSumPct += levelRatios[lv] * maxCountForRatio;
+    }
+    fullRatioSumPct *= 100;
+    const frsEl = document.getElementById(`bounty-fullratiosum-${round}`);
+    if(frsEl){
+      frsEl.textContent = fullRatioSumPct.toFixed(1) + '%';
+      frsEl.classList.remove('pos','neg');
+      frsEl.classList.add(Math.abs(fullRatioSumPct-100) < 0.05 ? 'pos' : 'neg');
+    }
+
+    // 등급별 최대 개수 대비 사용량 표시(초과 시 경고)
+    let anyOver = false;
+    for(let lv=0;lv<4;lv++){
+      const maxc = num(`bl-count-${round}-${lv}`);
+      const used = usedByLevel[lv];
+      const cellEl = document.getElementById(`bl-used-${round}-${lv}`);
+      if(cellEl){
+        cellEl.textContent = `${used} / ${maxc}`;
+        cellEl.classList.remove('neg','pos');
+        if(used > maxc){ cellEl.classList.add('neg'); anyOver = true; }
+        else { cellEl.classList.add('pos'); }
+      }
+    }
+    const bwEl = document.getElementById(`bounty-warn-${round}`);
+    if(bwEl){
+      if(anyOver){
+        bwEl.style.display = '';
+        bwEl.textContent = `${ROUND_LABELS[round-1]}: 일부 등급에서 참가자에게 배정된 바운티 개수가 최대 개수를 초과했습니다. 확인해주세요.`;
+      } else {
+        bwEl.style.display = 'none';
+      }
+    }
+  }
+
+  // final table
+  let grandCheck = 0;
+  for(let i=1;i<=MAXP;i++){
+    const buyinVal = -finalBuyin[i];
+    document.getElementById('final-buyin-'+i).textContent = fmtSigned(buyinVal);
+    let totalFinal = buyinVal;
+    for(let round=1;round<=roundCount;round++){
+      const pv = finalPrize[round][i]||0;
+      const bv = finalBounty[round][i]||0;
+      document.getElementById(`final-prize-${round}-${i}`).textContent = fmtSigned(pv);
+      document.getElementById(`final-bounty-${round}-${i}`).textContent = fmtSigned(bv);
+      totalFinal += pv + bv;
+    }
+    const totalEl = document.getElementById('final-total-'+i);
+    totalEl.textContent = fmtSigned(totalFinal);
+    totalEl.className = 'out prow-'+i+' '+(totalFinal>0.5?'pos':(totalFinal<-0.5?'neg':''));
+    if(i<=n) grandCheck += totalFinal;
+  }
+  const checkEl = document.getElementById('finalCheck');
+  const ok = Math.abs(grandCheck) < 1;
+  checkEl.innerHTML = `<span class="${ok?'pos':'neg'}">${fmtSigned(grandCheck)}</span> ` + (ok? '<span class="badge ok">정상</span>' : '<span class="badge bad">확인필요</span>');
+}
+function fmtSigned(n){
+  const r = Math.round(n);
+  if(r>0) return '+'+r.toLocaleString('ko-KR');
+  return r.toLocaleString('ko-KR');
+}
+
+/* ---------- Export ---------- */
+function exportCSV(){
+  const n = parseInt(document.getElementById('participantCount').value,10);
+  let header = ['참가자','총 바이인'];
+  for(let r=1;r<=roundCount;r++){
+    header.push(`${ROUND_LABELS[r-1]} 상금`, `${ROUND_LABELS[r-1]} 바운티`);
+  }
+  header.push('최종 처리금액');
+  let rows = [header];
+  for(let i=1;i<=n;i++){
+    let row = [pname(i), document.getElementById('final-buyin-'+i).textContent];
+    for(let r=1;r<=roundCount;r++){
+      const prizeEl = document.getElementById(`final-prize-${r}-${i}`);
+      const bountyEl = document.getElementById(`final-bounty-${r}-${i}`);
+      row.push(prizeEl ? prizeEl.textContent : '0', bountyEl ? bountyEl.textContent : '0');
+    }
+    row.push(document.getElementById('final-total-'+i).textContent);
+    rows.push(row);
+  }
+  const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(["﻿"+csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const dayLabel = (sessions[currentSessionIndex] && sessions[currentSessionIndex].label) || 'day';
+  a.href = url;
+  a.download = `홀덤정산_${dayLabel}`.replace(/[\\/:*?"<>|]/g,'_') + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* ---------- Multi-day (session) management ---------- */
+let sessions = [];
+let currentSessionIndex = 0;
+let baseDefaultState = null;
+let hiddenTabsVisible = false;
+let roundCount = 0;
+let currentRoundIndex = 1;
+let currentTheme = 'light';
+
+function cloneState(s){ return Object.assign({}, s); }
+
+function collectState(){
+  const state = {};
+  document.querySelectorAll('#appRoot input, #appRoot select').forEach(elm=>{
+    if(elm.id) state[elm.id] = elm.value;
+  });
+  return state;
+}
+function applyState(state){
+  // 순위결과 드롭다운(rankwin-*)의 <option> 목록은 참가자 수(n)에 맞춰 매번 새로 그려지는데,
+  // 아래에서 값을 대입하기 "전"에 이 날짜(state)의 참가자 수만큼 옵션이 미리 준비되어 있어야 합니다.
+  // 그렇지 않으면(예: 참가자 수가 더 적은 날짜에서 더 많은 날짜로 전환할 때) 아직 좁은 옵션 목록만
+  // 있는 상태에서 더 큰 번호의 참가자를 값으로 넣으려다 조용히 실패해, 1위/2위 등 순위 결과가
+  // 빈 값으로 사라지는 문제가 있었습니다.
+  const targetN = parseInt(state['participantCount'], 10) || parseInt(document.getElementById('participantCount').value,10) || MAXP;
+  updateNamesAndSelects(targetN);
+  document.querySelectorAll('#appRoot input, #appRoot select').forEach(elm=>{
+    if(!elm.id) return;
+    if(elm.id in state) elm.value = state[elm.id];
+    // 이 날짜가 저장된 뒤에 새로 추가된 부(라운드) 등의 필드는 state에 값이 없으므로,
+    // 다른 날짜의 값이 남아있지 않도록 기본값으로 되돌립니다.
+    else if(baseDefaultState && (elm.id in baseDefaultState)) elm.value = baseDefaultState[elm.id];
+  });
+  recalcAll();
+}
+
+/* ---------- Rounds (부) tabs — 1부/2부/3부... 를 탭으로 전환, "+ 부 추가"로 확장 ---------- */
+function renderRoundTabs(){
+  const bar = document.getElementById('roundTabsBar');
+  if(!bar) return;
+  let html = '';
+  for(let r=1;r<=roundCount;r++){
+    const active = r===currentRoundIndex;
+    html += `<div class="daytab roundtab ${active?'active':''}" data-round="${r}">
+      <span class="daytab-label">${escapeHtml(ROUND_LABELS[r-1])}</span>
+      ${roundCount>1 ? `<button type="button" class="dtbtn" data-action="deleteround" data-round="${r}" title="이 부 삭제">×</button>` : ''}
+    </div>`;
+  }
+  html += `<button type="button" class="daytab-add" id="btnAddRound">+ 부 추가</button>`;
+  bar.innerHTML = html;
+}
+function switchRound(r){
+  currentRoundIndex = r;
+  for(let i=1;i<=roundCount;i++){
+    const card = document.getElementById(`round-card-${i}`);
+    if(card) card.style.display = (i===r) ? '' : 'none';
+  }
+  renderRoundTabs();
+}
+function ensureRoundsBuilt(targetCount){
+  while(roundCount < targetCount){
+    roundCount++;
+    const newIdx = roundCount;
+    if(!ROUND_LABELS[newIdx-1]) ROUND_LABELS.push(`${newIdx}부`);
+    if(!DEFAULT_BOUNTY_LEVELS[newIdx-1]){
+      const lastLevels = DEFAULT_BOUNTY_LEVELS[DEFAULT_BOUNTY_LEVELS.length-1];
+      DEFAULT_BOUNTY_LEVELS.push(lastLevels.map(l=>Object.assign({}, l)));
+    }
+    buildRound(newIdx-1);
+    // 새로 만들어진 부의 입력 요소들은 지금 값(빌드 시 채워진 기본값)을 baseDefaultState에 등록해둡니다.
+    // 이렇게 해야 이 부가 생기기 전에 저장된 다른 날짜로 전환할 때, 엉뚱한 값이 남지 않고 기본값으로 돌아갑니다.
+    if(baseDefaultState){
+      document.querySelectorAll(`#round-card-${newIdx} input, #round-card-${newIdx} select`).forEach(elm=>{
+        if(elm.id) baseDefaultState[elm.id] = elm.value;
+      });
+    }
+  }
+}
+function addRound(){
+  ensureRoundsBuilt(roundCount+1);
+  buildFinalTable();
+  switchRound(roundCount);
+  recalcAll();
+  markMetaDirty();
+}
+
+// 부(라운드) 삭제 시, 그 부보다 뒤에 있는 부들의 번호가 하나씩 앞으로 당겨집니다.
+// 이 함수는 저장된 상태(state) 안의 필드 id에 박혀있는 부 번호를 그에 맞게 다시 매핑합니다.
+// 예: 2부를 삭제하면 -> 기존 3부의 데이터(id의 "-3-")가 새 2부(id의 "-2-")로 옮겨지고, 기존 2부 데이터는 버려집니다.
+const ROUND_KEYED_PREFIXES = ['gtype','buyin','rankwin','bl-label','bl-ratio','bl-count','bg'];
+function remapRoundKeysInState(state, deletedRound){
+  const newState = {};
+  Object.keys(state).forEach(key=>{
+    for(const prefix of ROUND_KEYED_PREFIXES){
+      const m = key.match(new RegExp('^'+prefix+'-(\\d+)(-.*)?$'));
+      if(m){
+        const r = parseInt(m[1],10);
+        const rest = m[2] || '';
+        if(r === deletedRound) return; // 삭제된 부의 데이터는 버립니다.
+        const newR = r > deletedRound ? r-1 : r;
+        newState[`${prefix}-${newR}${rest}`] = state[key];
+        return;
+      }
+    }
+    newState[key] = state[key];
+  });
+  return newState;
+}
+function deleteRound(r){
+  if(roundCount<=1){ alert('마지막 부는 삭제할 수 없습니다.'); return; }
+  if(!confirm(`'${ROUND_LABELS[r-1]}'를 삭제할까요? 이 부에 입력된 모든 날짜의 데이터가 사라지며 되돌릴 수 없습니다.`)) return;
+
+  // 1) 현재 화면의 값을 먼저 저장하고, 모든 날짜(session)의 저장된 상태를 새 번호 체계로 옮깁니다.
+  sessions[currentSessionIndex].state = collectState();
+  sessions.forEach(s=>{ s.state = remapRoundKeysInState(s.state, r); });
+
+  // 2) 라벨/바운티 등급 기본값 배열에서도 해당 부를 제거합니다.
+  ROUND_LABELS.splice(r-1, 1);
+  DEFAULT_BOUNTY_LEVELS.splice(r-1, 1);
+  roundCount--;
+  // 기본 자동 이름("N부")이던 라벨은 삭제로 밀려난 위치에 맞게 다시 번호를 매겨,
+  // 예를 들어 2부를 삭제했을 때 남은 부가 "1부, 3부, 4부"처럼 번호가 비어보이지 않고 "1부, 2부, 3부"로 이어지게 합니다.
+  for(let i=0;i<roundCount;i++){
+    if(/^\d+부$/.test(ROUND_LABELS[i])) ROUND_LABELS[i] = `${i+1}부`;
+  }
+
+  // 3) 라운드 영역 DOM을 새 번호 체계로 완전히 다시 그립니다.
+  document.getElementById('roundsContainer').innerHTML = '';
+  for(let idx=0; idx<roundCount; idx++) buildRound(idx);
+  document.querySelectorAll('#roundsContainer input, #roundsContainer select').forEach(elm=>{
+    if(elm.id) baseDefaultState[elm.id] = elm.value;
+  });
+  buildFinalTable();
+
+  // 4) 새로 그려진 DOM에 옮겨진 현재 날짜 데이터를 다시 채워넣습니다.
+  applyState(sessions[currentSessionIndex].state);
+  switchRound(Math.min(r, roundCount));
+  builtRoundSig = roundSig();
+  sessions.forEach(markDayDirtyNoSchedule);
+  markMetaDirty();
+}
+function roundTabsClickHandler(e){
+  if(e.target.id === 'btnAddRound'){ addRound(); return; }
+  const delBtn = e.target.closest('[data-action="deleteround"]');
+  if(delBtn){ deleteRound(parseInt(delBtn.dataset.round,10)); return; }
+  const tab = e.target.closest('.roundtab');
+  if(tab) switchRound(parseInt(tab.dataset.round,10));
+}
+
+/* ---------- Theme (dark/light) ---------- */
+function applyTheme(theme){
+  // 기본값은 '라이트'입니다 — 저장된 파일에 테마 정보가 없던 예전 파일을 열 때도 라이트로 보입니다.
+  currentTheme = (theme === 'dark') ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', currentTheme);
+  const mi = document.getElementById('miThemeToggle');
+  if(mi) mi.textContent = currentTheme === 'light' ? '🌙 다크 모드' : '☀️ 라이트 모드';
+}
+function toggleTheme(){
+  // 화면 모드는 클라우드에 동기화하지 않는 개인 표시 설정입니다 (파일로 저장할 때만 함께 저장됩니다).
+  applyTheme(currentTheme === 'light' ? 'dark' : 'light');
+  lsSet(LS_THEME, currentTheme);
+}
+function defaultDayLabel(){
+  const d = new Date();
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const dd = String(d.getDate()).padStart(2,'0');
+  return `${mm}/${dd} 게임`;
+}
+function renderDayTabs(){
+  const bar = document.getElementById('dayTabsBar');
+  let html = '';
+  sessions.forEach((s,idx)=>{
+    if(s.hidden) return;
+    const active = idx===currentSessionIndex;
+    html += `<div class="daytab ${active?'active':''}" data-idx="${idx}" draggable="true">
+      <span class="daytab-label" data-idx="${idx}">${escapeHtml(s.label)}</span>
+      <div class="dtdropdown" data-idx="${idx}">
+        <button type="button" class="dtbtn" data-action="togglemenu" data-idx="${idx}" title="더보기">⋯</button>
+        <div class="dtdropdown-menu" data-idx="${idx}">
+          <button type="button" class="dropdown-item" data-action="rename" data-idx="${idx}">명칭 변경</button>
+          <button type="button" class="dropdown-item" data-action="hide" data-idx="${idx}">숨기기</button>
+          <button type="button" class="dropdown-item mi-warn" data-action="reset" data-idx="${idx}">초기화</button>
+          <button type="button" class="dropdown-item mi-danger" data-action="delete" data-idx="${idx}">삭제</button>
+        </div>
+      </div>
+    </div>`;
+  });
+  bar.innerHTML = html;
+  const hiddenList = sessions.filter(s=>s.hidden);
+  const miToggleHidden = document.getElementById('miToggleHidden');
+  if(miToggleHidden){
+    if(hiddenList.length){
+      miToggleHidden.style.display = '';
+      miToggleHidden.textContent = `${hiddenTabsVisible ? '숨긴 날짜 접기' : '숨긴 날짜 보기'} (${hiddenList.length})`;
+    } else {
+      miToggleHidden.style.display = 'none';
+    }
+  }
+
+  const hiddenBar = document.getElementById('hiddenDayTabsBar');
+  if(hiddenTabsVisible && hiddenList.length){
+    let hh = '';
+    sessions.forEach((s,idx)=>{
+      if(!s.hidden) return;
+      hh += `<div class="daytab hiddenday" data-idx="${idx}">
+        <span class="daytab-label">${escapeHtml(s.label)}</span>
+        <div class="dtdropdown" data-idx="${idx}">
+          <button type="button" class="dtbtn" data-action="togglemenu" data-idx="${idx}" title="더보기">⋯</button>
+          <div class="dtdropdown-menu" data-idx="${idx}">
+            <button type="button" class="dropdown-item" data-action="unhide" data-idx="${idx}">숨김 해제</button>
+            <button type="button" class="dropdown-item mi-danger" data-action="delete" data-idx="${idx}">삭제</button>
+          </div>
+        </div>
+      </div>`;
+    });
+    hiddenBar.innerHTML = hh;
+    hiddenBar.style.display = 'flex';
+  } else {
+    hiddenBar.innerHTML = '';
+    hiddenBar.style.display = 'none';
+  }
+}
+function switchToDay(idx){
+  if(idx===currentSessionIndex) return;
+  sessions[currentSessionIndex].state = collectState();
+  loadDay(idx);
+  rememberCurrentDay();
+}
+function loadDay(idx){
+  currentSessionIndex = idx;
+  const st = sessions[idx].state || cloneState(baseDefaultState);
+  applyState(st);
+  renderDayTabs();
+}
+function addDay(){
+  sessions[currentSessionIndex].state = collectState();
+  const s = newSession(defaultDayLabel(), cloneState(baseDefaultState));
+  sessions.push(s);
+  loadDay(sessions.length-1);
+  rememberCurrentDay();
+  orderDirty = true;
+  markDayDirty(s);
+}
+function renameDay(idx){
+  const cur = sessions[idx].label;
+  const next = prompt('날짜(회차) 이름을 입력하세요', cur);
+  if(next && next.trim()){
+    sessions[idx].label = next.trim();
+    renderDayTabs();
+    markDayDirty(sessions[idx]);
+  }
+}
+function hideDay(idx){
+  const visibleCount = sessions.filter(s=>!s.hidden).length;
+  if(visibleCount<=1){ alert('최소 1개의 날짜는 보이는 상태여야 합니다.'); return; }
+  sessions[idx].hidden = true;
+  if(currentSessionIndex===idx){
+    const nextIdx = sessions.findIndex(s=>!s.hidden);
+    loadDay(nextIdx);
+  } else {
+    renderDayTabs();
+  }
+  markDayDirty(sessions[idx]);
+}
+function unhideDay(idx){
+  sessions[idx].hidden = false;
+  renderDayTabs();
+  markDayDirty(sessions[idx]);
+}
+function resetDay(idx){
+  const label = sessions[idx] ? sessions[idx].label : '해당 날짜';
+  if(!confirm(`'${label}'의 입력값을 모두 초기화할까요? 되돌릴 수 없습니다.`)) return;
+  if(idx === currentSessionIndex){
+    applyState(cloneState(baseDefaultState));
+  } else {
+    sessions[idx].state = cloneState(baseDefaultState);
+  }
+  markDayDirty(sessions[idx]);
+}
+function deleteDay(idx){
+  if(sessions.length<=1){ alert('마지막 날짜는 삭제할 수 없습니다.'); return; }
+  if(!confirm(`'${sessions[idx].label}' 날짜를 삭제할까요? 이 날짜의 모든 입력 기록이 사라지며 되돌릴 수 없습니다.`)) return;
+  noteDeleted(sessions[idx]);
+  sessions.splice(idx,1);
+  if(currentSessionIndex===idx){
+    const fallback = sessions.findIndex(s=>!s.hidden);
+    loadDay(fallback>=0 ? fallback : Math.min(idx, sessions.length-1));
+  } else if(currentSessionIndex>idx){
+    currentSessionIndex--;
+    renderDayTabs();
+  } else {
+    renderDayTabs();
+  }
+  rememberCurrentDay();
+  scheduleSave();
+}
+
+/* ---------- Day tabs click handling ---------- */
+function closeAllDayMenus(except){
+  document.querySelectorAll('.dtdropdown.open').forEach(el=>{
+    if(el !== except) el.classList.remove('open');
+  });
+}
+function toggleMoreMenu(){
+  document.getElementById('moreMenuWrap').classList.toggle('open');
+}
+function closeMoreMenu(){
+  document.getElementById('moreMenuWrap').classList.remove('open');
+}
+function toggleDayMoreMenu(){
+  document.getElementById('dayMoreMenuWrap').classList.toggle('open');
+}
+function closeDayMoreMenu(){
+  document.getElementById('dayMoreMenuWrap').classList.remove('open');
+}
+function dayTabsClickHandler(e){
+  const toggleBtn = e.target.closest('[data-action="togglemenu"]');
+  if(toggleBtn){
+    e.stopPropagation();
+    const wrap = toggleBtn.closest('.dtdropdown');
+    const wasOpen = wrap.classList.contains('open');
+    closeAllDayMenus();
+    wrap.classList.toggle('open', !wasOpen);
+    return;
+  }
+  const btn = e.target.closest('[data-action]');
+  if(btn){
+    e.stopPropagation();
+    const idx = parseInt(btn.dataset.idx,10);
+    if(btn.dataset.action==='rename') renameDay(idx);
+    else if(btn.dataset.action==='delete') deleteDay(idx);
+    else if(btn.dataset.action==='hide') hideDay(idx);
+    else if(btn.dataset.action==='unhide') unhideDay(idx);
+    else if(btn.dataset.action==='reset') resetDay(idx);
+    closeAllDayMenus();
+    return;
+  }
+  const tab = e.target.closest('.daytab');
+  if(tab && !tab.classList.contains('hiddenday')){ switchToDay(parseInt(tab.dataset.idx,10)); }
+}
+
+/* ---------- Day tab drag & drop reordering ---------- */
+let dragSourceIdx = null;
+function clearDragOverMarks(){
+  document.querySelectorAll('#dayTabsBar .daytab').forEach(t=>{
+    t.classList.remove('drag-over-before','drag-over-after','dragging');
+  });
+}
+function moveSession(fromIdx, toIdx){
+  if(fromIdx === toIdx) return;
+  const activeSession = sessions[currentSessionIndex];
+  const item = sessions.splice(fromIdx,1)[0];
+  let insertAt = toIdx;
+  if(fromIdx < toIdx) insertAt -= 1;
+  if(insertAt < 0) insertAt = 0;
+  if(insertAt > sessions.length) insertAt = sessions.length;
+  sessions.splice(insertAt,0,item);
+  currentSessionIndex = sessions.indexOf(activeSession);
+  renderDayTabs();
+  orderDirty = true;
+  scheduleSave();
+}
+function dayTabsDragStart(e){
+  const tab = e.target.closest('.daytab');
+  if(!tab || tab.classList.contains('hiddenday')){ return; }
+  dragSourceIdx = parseInt(tab.dataset.idx,10);
+  e.dataTransfer.effectAllowed = 'move';
+  try{ e.dataTransfer.setData('text/plain', String(dragSourceIdx)); }catch(err){}
+  tab.classList.add('dragging');
+}
+function dayTabsDragOver(e){
+  const tab = e.target.closest('.daytab');
+  if(!tab || tab.classList.contains('hiddenday') || dragSourceIdx===null) return;
+  e.preventDefault();
+  document.querySelectorAll('#dayTabsBar .daytab').forEach(t=>{
+    if(t!==tab) t.classList.remove('drag-over-before','drag-over-after');
+  });
+  const rect = tab.getBoundingClientRect();
+  const before = (e.clientX - rect.left) < rect.width/2;
+  tab.classList.toggle('drag-over-before', before);
+  tab.classList.toggle('drag-over-after', !before);
+}
+function dayTabsDragLeave(e){
+  const tab = e.target.closest('.daytab');
+  if(tab) tab.classList.remove('drag-over-before','drag-over-after');
+}
+function dayTabsDrop(e){
+  const tab = e.target.closest('.daytab');
+  if(tab && !tab.classList.contains('hiddenday') && dragSourceIdx!==null){
+    e.preventDefault();
+    const targetIdx = parseInt(tab.dataset.idx,10);
+    const rect = tab.getBoundingClientRect();
+    const before = (e.clientX - rect.left) < rect.width/2;
+    const insertIdx = targetIdx + (before?0:1);
+    moveSession(dragSourceIdx, insertIdx);
+  }
+  dragSourceIdx = null;
+  clearDragOverMarks();
+}
+function dayTabsDragEnd(e){
+  dragSourceIdx = null;
+  clearDragOverMarks();
+}
+
+/* ===================== 서버(구글 시트) 동기화 =====================
+ * 데이터 보호 원칙
+ *  - 서버에서 최신 데이터를 정상적으로 받기 전에는 절대 저장하지 않습니다.
+ *  - 바뀐 날짜만 서버로 보냅니다. 날짜 삭제는 "삭제" 메뉴를 눌렀을 때만 서버에 전달됩니다.
+ *  - 날짜마다 버전을 같이 보내, 다른 기기가 먼저 고친 날짜는 서버가 거절합니다(덮어쓰기 방지).
+ */
+const LS_PASS = 'holdem-passcode';
+const LS_THEME = 'holdem-theme';
+const LS_DAY = 'holdem-last-day';
+let syncReady = false;
+let syncBlockedReason = 'loading';
+let orderDirty = false;
+let metaDirty = false;
+let pendingDeletes = [];
+let saveTimer = null;
+let saveInFlight = false;
+let saveQueued = false;
+let retryDelay = 0;
+let lastSavedAt = '';
+let builtRoundSig = '';
+
+function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+function lsSet(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }
+
+function newDayId(){
+  const a = new Uint8Array(4);
+  window.crypto.getRandomValues(a);
+  return 'd' + Date.now().toString(36) + Array.from(a, b=>b.toString(16).padStart(2,'0')).join('').slice(0,6);
+}
+function newSession(label, state){
+  return {id: newDayId(), label, state, hidden:false, version:0, editSeq:1, savedSeq:0};
+}
+function isDirty(s){ return s.editSeq !== s.savedSeq; }
+function markDayDirtyNoSchedule(s){ if(s) s.editSeq++; }
+function markDayDirty(s){ markDayDirtyNoSchedule(s); scheduleSave(); }
+function markMetaDirty(){ metaDirty = true; scheduleSave(); }
+function noteDeleted(s){ if(s && s.version > 0) pendingDeletes.push({id: s.id, baseVersion: s.version}); }
+function hasUnsaved(){ return sessions.some(isDirty) || pendingDeletes.length > 0 || orderDirty || metaDirty; }
+function rememberCurrentDay(){ const s = sessions[currentSessionIndex]; if(s) lsSet(LS_DAY, s.id); }
+function roundSig(){ return roundCount + '|' + ROUND_LABELS.slice(0, roundCount).join('|'); }
+
+async function api(path, opts = {}){
+  const headers = {'Content-Type': 'application/json'};
+  const pass = lsGet(LS_PASS);
+  if(pass) headers['x-app-passcode'] = pass;
+  let res;
+  try{
+    res = await fetch(path, {method: opts.method || 'GET', headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined});
+  }catch(e){
+    const err = new Error('서버에 연결할 수 없습니다. 인터넷 연결을 확인하세요.');
+    err.network = true;
+    throw err;
+  }
+  let json = null;
+  try{ json = await res.json(); }catch(e){}
+  if(!res.ok){
+    const err = new Error((json && json.message) || `서버 오류 (${res.status})`);
+    err.status = res.status; err.code = json && json.error; err.data = json || {};
+    throw err;
+  }
+  return json;
+}
+
+function setBanner(text, btnLabel, onClick){
+  const b = document.getElementById('syncBanner');
+  if(!text){ b.style.display = 'none'; return; }
+  document.getElementById('syncBannerText').textContent = text;
+  const btn = document.getElementById('btnSyncRetry');
+  if(btnLabel){ btn.style.display = ''; btn.textContent = btnLabel; btn.onclick = onClick; }
+  else { btn.style.display = 'none'; btn.onclick = null; }
+  b.style.display = 'flex';
+}
+function setSaveStatus(text, cls){
+  const e = document.getElementById('saveStatus');
+  e.textContent = text || '';
+  e.className = 'save-status' + (cls ? ' ' + cls : '');
+}
+
+function rebuildRounds(n){
+  document.getElementById('roundsContainer').innerHTML = '';
+  roundCount = 0;
+  ensureRoundsBuilt(n);
+  builtRoundSig = roundSig();
+}
+
+// 서버 데이터로 화면 전체를 교체
+function applyServerDataset(ds){
+  const n = Math.max(1, parseInt(ds.roundCount, 10) || 3);
+  if(Array.isArray(ds.roundLabels)) ds.roundLabels.forEach((l, i)=>{ if(typeof l === 'string' && l) ROUND_LABELS[i] = l; });
+  const wanted = n + '|' + ROUND_LABELS.slice(0, n).join('|');
+  if(wanted !== builtRoundSig) rebuildRounds(n);
+  buildFinalTable();
+
+  sessions = (ds.days || []).map(d=>({id: d.id, label: d.label, hidden: !!d.hidden, version: d.version, state: d.state, editSeq: 0, savedSeq: 0}));
+  pendingDeletes = []; orderDirty = false; metaDirty = false;
+  if(!sessions.length) sessions = [newSession(defaultDayLabel(), cloneState(baseDefaultState))];
+
+  const visibleIdx = (id)=> sessions.findIndex(s=>s.id === id && !s.hidden);
+  let idx = visibleIdx(lsGet(LS_DAY));
+  if(idx < 0) idx = visibleIdx(ds.currentDayId);
+  if(idx < 0){
+    for(let i = sessions.length - 1; i >= 0; i--) if(!sessions[i].hidden){ idx = i; break; }
+  }
+  if(idx < 0) idx = 0;
+  loadDay(idx);
+  switchRound(Math.min(Math.max(currentRoundIndex, 1), roundCount));
+}
+
+async function loadFromServer(){
+  syncReady = false;
+  syncBlockedReason = 'loading';
+  clearTimeout(saveTimer);
+  setBanner('서버에서 최신 데이터를 불러오는 중입니다… (완료 전에는 저장되지 않습니다)');
+  let data;
+  try{
+    data = await api('/api/data');
+  }catch(e){
+    if(e.status === 401 && e.code === 'passcode'){
+      setBanner('비밀번호를 입력해야 장부를 불러올 수 있습니다.');
+      askPasscode();
+      return false;
+    }
+    syncBlockedReason = 'error';
+    setBanner(`서버에서 데이터를 불러오지 못해 저장을 멈춰두었습니다. 시트의 기존 데이터는 안전합니다. (${e.message})`, '다시 불러오기', ()=>reloadFromServer());
+    return false;
+  }
+  if(data.status === 'migration_pending'){
+    applyServerDataset(data.dataset);
+    syncBlockedReason = 'migration';
+    setBanner(`기존 데이터(${data.legacy ? data.legacy.days : '?'}개 날짜)를 새 구조로 옮기는 작업이 아직 진행되지 않았습니다. 관리자 페이지에서 먼저 이전해주세요. (그 전에는 저장되지 않습니다)`, '관리자 페이지', ()=>{ location.href = '/admin'; });
+    return false;
+  }
+  applyServerDataset(data.dataset);
+  if(data.readOnly){
+    syncBlockedReason = 'readonly';
+    setBanner('안전을 위해 저장이 잠겨 있습니다: ' + data.readOnly);
+    return false;
+  }
+  syncReady = true;
+  syncBlockedReason = null;
+  setBanner(null);
+  setSaveStatus(lastSavedAt ? `저장됨 · ${lastSavedAt}` : '');
+  if(hasUnsaved()) scheduleSave(); // 완전히 비어있는 새 시트라면 첫 날짜를 저장
+  return true;
+}
+
+async function reloadFromServer(){
+  if(hasUnsaved() && !confirm('이 기기에서 아직 저장되지 않은 변경이 있습니다.\n서버의 최신 데이터를 불러오면 이 변경은 사라집니다.\n(취소한 뒤 더보기 › 전체 데이터 다운로드로 먼저 백업할 수 있습니다)\n\n계속할까요?')) return;
+  await loadFromServer();
+}
+
+function datasetSig(days, rc, labels){
+  return days.map(d=>`${d.id}:${d.version}:${d.hidden ? 1 : 0}`).join('|') + '#' + rc + '#' + labels.slice(0, rc).join('|');
+}
+// 다른 기기에서 바뀐 내용이 있으면 조용히 불러오기 (이 기기에 저장 안 된 변경이 있으면 건너뜀)
+async function refreshIfChanged(){
+  if(!syncReady || saveInFlight || hasUnsaved()) return;
+  let data;
+  try{ data = await api('/api/data'); }catch(e){ return; }
+  if(data.status !== 'ok' || data.readOnly) return;
+  if(!syncReady || saveInFlight || hasUnsaved()) return;
+  const remote = datasetSig(data.dataset.days, data.dataset.roundCount, data.dataset.roundLabels);
+  const local = datasetSig(sessions, roundCount, ROUND_LABELS);
+  if(remote !== local){
+    applyServerDataset(data.dataset);
+    showToast('다른 기기에서 바뀐 내용을 불러왔습니다.');
+  }
+}
+
+function scheduleSave(){
+  if(!syncReady) return; // 불러오기 전/실패/충돌 상태에서는 저장하지 않음 (배너로 안내 중)
+  clearTimeout(saveTimer);
+  setSaveStatus('저장 대기 중…', 'saving');
+  saveTimer = setTimeout(doSave, 1500);
+}
+
+async function doSave(){
+  if(!syncReady) return;
+  if(saveInFlight){ saveQueued = true; return; }
+  if(!hasUnsaved()){ setSaveStatus(lastSavedAt ? `저장됨 · ${lastSavedAt}` : ''); return; }
+  sessions[currentSessionIndex].state = collectState();
+  const sent = sessions.filter(isDirty).map(s=>({s, seq: s.editSeq}));
+  const payload = {
+    changes: sent.map(({s})=>({id: s.id, baseVersion: s.version, label: s.label, hidden: !!s.hidden, state: cloneState(s.state || baseDefaultState)})),
+    deletes: pendingDeletes.slice(),
+    currentDayId: (sessions[currentSessionIndex] || {}).id,
+  };
+  const sentOrder = orderDirty, sentMeta = metaDirty, sentDeletes = payload.deletes.length;
+  if(sentOrder) payload.order = sessions.map(s=>s.id);
+  if(sentMeta) payload.meta = {roundCount, roundLabels: ROUND_LABELS.slice(0, roundCount)};
+  orderDirty = false; metaDirty = false;
+  saveInFlight = true;
+  setSaveStatus('저장 중…', 'saving');
+  try{
+    const r = await api('/api/save', {method: 'POST', body: payload});
+    sent.forEach(({s, seq})=>{
+      if(r.versions && r.versions[s.id] !== undefined) s.version = r.versions[s.id];
+      s.savedSeq = seq; // 보내는 사이에 또 고쳤다면(editSeq 증가) 계속 "저장 필요" 상태로 남음
+    });
+    pendingDeletes = pendingDeletes.slice(sentDeletes);
+    retryDelay = 0;
+    lastSavedAt = new Date().toLocaleTimeString('ko-KR');
+    setSaveStatus(`저장됨 · ${lastSavedAt}`);
+    const localById = new Map(sessions.map(s=>[s.id, s]));
+    const remoteChanged = (r.days || []).some(d=>{ const s = localById.get(d.id); return !s || s.version !== d.version; })
+      || sessions.some(s=>s.version > 0 && !(r.days || []).some(d=>d.id === s.id))
+      || r.roundCount !== roundCount;
+    if(remoteChanged) setTimeout(refreshIfChanged, 400);
+  }catch(e){
+    if(sentOrder) orderDirty = true;
+    if(sentMeta) metaDirty = true;
+    if(e.status === 409 && e.code === 'CONFLICT'){
+      syncReady = false; syncBlockedReason = 'conflict';
+      const names = (e.data.conflicts || []).map(c=>`'${c.label}'`).join(', ');
+      setSaveStatus('저장 중단됨', 'error');
+      setBanner(`다른 기기에서 ${names} 날짜를 먼저 수정해서 저장을 멈췄습니다. 최신 데이터를 불러오면 이 기기에서 저장되지 않은 변경은 사라집니다. (필요하면 더보기 › 전체 데이터 다운로드로 먼저 백업하세요)`, '최신 데이터 불러오기', ()=>reloadFromServer());
+    } else if(e.status === 401){
+      syncReady = false; syncBlockedReason = 'error';
+      setBanner('비밀번호가 바뀌었습니다. 다시 입력해주세요.');
+      askPasscode();
+    } else if(e.network || e.status === 502 || e.status === 503 || e.status === 504){
+      retryDelay = Math.min(retryDelay ? retryDelay * 2 : 3000, 60000);
+      setSaveStatus(`저장 실패 · ${Math.round(retryDelay / 1000)}초 후 다시 시도`, 'error');
+      showToast('저장 실패: ' + e.message, true);
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(doSave, retryDelay);
+    } else {
+      syncReady = false; syncBlockedReason = 'readonly';
+      setSaveStatus('저장 안 됨', 'error');
+      setBanner('저장하지 못했습니다: ' + e.message, '다시 불러오기', ()=>reloadFromServer());
+    }
+  }finally{
+    saveInFlight = false;
+    if(saveQueued){ saveQueued = false; if(syncReady && hasUnsaved()) scheduleSave(); }
+  }
+}
+
+// 백업/복원 전에 저장 대기 중인 변경을 먼저 서버에 보냄
+async function flushSave(){
+  clearTimeout(saveTimer);
+  for(let i = 0; i < 3 && syncReady && (saveInFlight || hasUnsaved()); i++){
+    while(saveInFlight) await new Promise(r=>setTimeout(r, 100));
+    if(syncReady && hasUnsaved()) await doSave();
+  }
+  return syncReady && !hasUnsaved();
+}
+
+/* ===================== 백업 ===================== */
+const KIND_LABELS = {
+  'manual': '수동 백업',
+  'auto-daily': '자동 · 하루 첫 저장 전',
+  'auto-before-delete': '자동 · 날짜 삭제 전',
+  'auto-before-restore': '자동 · 복원 전',
+  'migration-source': '이전 직전 원본',
+};
+function openModal(id){ document.getElementById(id).style.display = 'flex'; }
+function closeModal(id){ document.getElementById(id).style.display = 'none'; }
+
+function openBackupCreate(){
+  if(!syncReady){ showToast('서버와 동기화된 상태에서만 백업할 수 있습니다.', true); return; }
+  const day = sessions[currentSessionIndex];
+  const nameEl = document.getElementById('backupName');
+  nameEl.value = `${day ? day.label : ''} ${new Date().toLocaleString('ko-KR', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'})}`.trim();
+  openModal('backupCreateOverlay');
+  nameEl.focus(); nameEl.select();
+}
+async function confirmBackupCreate(){
+  const name = document.getElementById('backupName').value.trim();
+  if(!name){ showToast('백업 이름을 입력해주세요.', true); return; }
+  if(!(await flushSave())){ showToast('저장되지 않은 변경이 있어 백업하지 못했습니다.', true); return; }
+  try{
+    await api('/api/backups', {method: 'POST', body: {name}});
+    closeModal('backupCreateOverlay');
+    showToast(`"${name}" 백업을 만들었습니다.`);
+  }catch(e){ showToast('백업 실패: ' + e.message, true); }
+}
+async function openBackupList(){
+  const list = document.getElementById('backupList');
+  list.innerHTML = '<div class="empty-note">불러오는 중…</div>';
+  openModal('backupListOverlay');
+  let r;
+  try{ r = await api('/api/backups'); }
+  catch(e){ list.innerHTML = `<div class="empty-note">목록을 불러오지 못했습니다: ${escapeHtml(e.message)}</div>`; return; }
+  if(!r.backups.length){ list.innerHTML = '<div class="empty-note">아직 백업이 없습니다.</div>'; return; }
+  list.innerHTML = r.backups.map(b=>`
+    <div class="cloud-load-item" data-id="${escapeHtml(b.id)}">
+      <div class="cloud-load-info">
+        <div style="min-width:0;">
+          <div class="name">${escapeHtml(b.name)}</div>
+          <div class="kind">${escapeHtml(KIND_LABELS[b.kind] || b.kind)} · ${escapeHtml(b.dayCount)}개 날짜 · ${escapeHtml(formatTime(b.createdAt))}</div>
+        </div>
+      </div>
+      <div class="backup-item-actions">
+        <button type="button" class="secondary" data-act="restore">복원</button>
+        <button type="button" class="cloud-load-delete" data-act="delete" title="삭제">×</button>
+      </div>
+    </div>`).join('');
+}
+function formatTime(iso){ try{ return new Date(iso).toLocaleString('ko-KR'); }catch(e){ return iso; } }
+async function backupListClick(e){
+  const btn = e.target.closest('[data-act]');
+  if(!btn) return;
+  const item = btn.closest('.cloud-load-item');
+  const id = item.dataset.id;
+  const name = item.querySelector('.name').textContent;
+  if(btn.dataset.act === 'restore'){
+    if(!syncReady){ showToast('서버와 동기화된 상태에서만 복원할 수 있습니다.', true); return; }
+    if(!confirm(`'${name}' 백업 시점으로 모든 날짜를 되돌릴까요?\n지금 상태는 복원 직전에 자동으로 한 번 더 백업됩니다.`)) return;
+    if(!(await flushSave())){ showToast('저장되지 않은 변경이 있어 복원하지 못했습니다.', true); return; }
+    try{
+      const r = await api(`/api/backups/${encodeURIComponent(id)}/restore`, {method: 'POST', body: {}});
+      lsSet(LS_DAY, '');
+      applyServerDataset(r.dataset);
+      closeModal('backupListOverlay');
+      showToast(`'${name}' 백업으로 복원했습니다.`);
+    }catch(err){ showToast('복원 실패: ' + err.message, true); }
+  } else if(btn.dataset.act === 'delete'){
+    if(!confirm(`'${name}' 백업을 삭제할까요? 되돌릴 수 없습니다.`)) return;
+    try{ await api(`/api/backups/${encodeURIComponent(id)}`, {method: 'DELETE'}); openBackupList(); showToast('백업을 삭제했습니다.'); }
+    catch(err){ showToast('삭제 실패: ' + err.message, true); }
+  }
+}
+
+// 전체 데이터를 예전 HTML과 같은 형식(JSON)으로 내려받기 — 관리자 페이지에서 다시 가져올 수도 있음
+function downloadAllData(){
+  sessions[currentSessionIndex].state = collectState();
+  const data = {
+    sessions: sessions.map(s=>({label: s.label, state: s.state || cloneState(baseDefaultState), hidden: !!s.hidden})),
+    currentSessionIndex, roundCount, roundLabels: ROUND_LABELS.slice(0, roundCount),
+    exportedAt: new Date().toISOString(),
+  };
+  const blob = new Blob([JSON.stringify(data, null, 1)], {type: 'application/json'});
+  const a = document.createElement('a');
+  const d = new Date();
+  a.href = URL.createObjectURL(blob);
+  a.download = `홀덤장부_전체데이터_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+
+function askPasscode(){
+  openModal('passcodeOverlay');
+  setTimeout(()=>document.getElementById('passcodeInput').focus(), 50);
+}
+function confirmPasscode(){
+  const v = document.getElementById('passcodeInput').value;
+  if(!v) return;
+  lsSet(LS_PASS, v);
+  closeModal('passcodeOverlay');
+  loadFromServer();
+}
+
+/* ===================== 시작 ===================== */
+function init(){
+  applyTheme(lsGet(LS_THEME) || 'light');
+  buildParticipantCountSelect();
+  buildParticipantTable();
+  buildRankRatioTable();
+  ensureRoundsBuilt(3);
+  builtRoundSig = roundSig();
+  buildFinalTable();
+
+  // 장부 영역(#appRoot) 안의 입력만 "날짜 데이터 변경"으로 봅니다 (팝업의 입력칸은 제외)
+  const onEdit = (e)=>{
+    if(!e.target.closest('#appRoot')) return;
+    recalcAll();
+    markDayDirty(sessions[currentSessionIndex]);
+  };
+  document.body.addEventListener('input', onEdit);
+  document.body.addEventListener('change', onEdit);
+
+  document.getElementById('btnMoreMenu').addEventListener('click', (e)=>{ e.stopPropagation(); toggleMoreMenu(); });
+  document.getElementById('miThemeToggle').addEventListener('click', (e)=>{ e.stopPropagation(); toggleTheme(); closeMoreMenu(); });
+  document.getElementById('miExport').addEventListener('click', (e)=>{ e.stopPropagation(); exportCSV(); closeMoreMenu(); });
+  document.getElementById('miBackupCreate').addEventListener('click', (e)=>{ e.stopPropagation(); closeMoreMenu(); openBackupCreate(); });
+  document.getElementById('miBackupList').addEventListener('click', (e)=>{ e.stopPropagation(); closeMoreMenu(); openBackupList(); });
+  document.getElementById('miDownloadData').addEventListener('click', (e)=>{ e.stopPropagation(); closeMoreMenu(); downloadAllData(); });
+  document.getElementById('btnDayMoreMenu').addEventListener('click', (e)=>{ e.stopPropagation(); toggleDayMoreMenu(); });
+  document.getElementById('miAddDay').addEventListener('click', (e)=>{ e.stopPropagation(); addDay(); closeDayMoreMenu(); });
+  document.getElementById('miToggleHidden').addEventListener('click', (e)=>{ e.stopPropagation(); hiddenTabsVisible = !hiddenTabsVisible; renderDayTabs(); closeDayMoreMenu(); });
+  document.addEventListener('click', (e)=>{
+    if(!e.target.closest('.dtdropdown')) closeAllDayMenus();
+    if(!e.target.closest('#moreMenuWrap')) closeMoreMenu();
+    if(!e.target.closest('#dayMoreMenuWrap')) closeDayMoreMenu();
+  });
+  document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click', ()=>closeModal(b.dataset.close)));
+  ['backupCreateOverlay', 'backupListOverlay'].forEach(id=>{
+    document.getElementById(id).addEventListener('click', (e)=>{ if(e.target.id === id) closeModal(id); });
+  });
+  document.getElementById('btnBackupCreateConfirm').addEventListener('click', confirmBackupCreate);
+  document.getElementById('backupName').addEventListener('keydown', (e)=>{ if(e.key === 'Enter') confirmBackupCreate(); });
+  document.getElementById('backupList').addEventListener('click', backupListClick);
+  document.getElementById('btnPasscodeConfirm').addEventListener('click', confirmPasscode);
+  document.getElementById('passcodeInput').addEventListener('keydown', (e)=>{ if(e.key === 'Enter') confirmPasscode(); });
+  document.addEventListener('keydown', (e)=>{
+    if(e.key === 'Escape'){ closeModal('backupCreateOverlay'); closeModal('backupListOverlay'); closeMoreMenu(); closeDayMoreMenu(); closeAllDayMenus(); }
+  });
+  document.getElementById('roundTabsBar').addEventListener('click', roundTabsClickHandler);
+  document.getElementById('dayTabsBar').addEventListener('click', dayTabsClickHandler);
+  document.getElementById('hiddenDayTabsBar').addEventListener('click', dayTabsClickHandler);
+  const dayTabsBarEl = document.getElementById('dayTabsBar');
+  dayTabsBarEl.addEventListener('dragstart', dayTabsDragStart);
+  dayTabsBarEl.addEventListener('dragover', dayTabsDragOver);
+  dayTabsBarEl.addEventListener('dragleave', dayTabsDragLeave);
+  dayTabsBarEl.addEventListener('drop', dayTabsDrop);
+  dayTabsBarEl.addEventListener('dragend', dayTabsDragEnd);
+
+  recalcAll();
+  baseDefaultState = collectState();
+
+  // 불러오기 전 임시 화면 (저장 대상 아님)
+  sessions = [{id: newDayId(), label: defaultDayLabel(), state: null, hidden: false, version: 0, editSeq: 0, savedSeq: 0}];
+  currentSessionIndex = 0;
+  renderDayTabs();
+  switchRound(1);
+
+  window.addEventListener('beforeunload', (e)=>{
+    if(hasUnsaved()){ e.preventDefault(); e.returnValue = ''; }
+  });
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'hidden'){ if(syncReady && hasUnsaved()) doSave(); }
+    else refreshIfChanged();
+  });
+  // 화면을 켜둔 채로 있어도 30초마다 다른 기기의 변경을 확인 (이 기기에 저장 안 된 변경이 있으면 건너뜀)
+  setInterval(()=>{ if(document.visibilityState === 'visible') refreshIfChanged(); }, 30000);
+
+  loadFromServer();
+}
+document.addEventListener('DOMContentLoaded', init);

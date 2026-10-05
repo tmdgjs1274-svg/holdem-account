@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>홀덤 장부 · 관리자</title>
+<link rel="stylesheet" href="/css/app.css">
+<script>try{document.documentElement.setAttribute("data-theme", localStorage.getItem("holdem-theme")==="dark"?"dark":"light");}catch(e){document.documentElement.setAttribute("data-theme","light");}</script>
+<style>
+  .wrap{max-width:860px; margin:0 auto;}
+  .row{display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+  .result{margin-top:12px; font-size:13.5px; line-height:1.6;}
+  .result table{margin-top:8px;}
+  .okbox{padding:12px 14px; border-radius:10px; border:1.5px solid var(--accent); background:var(--accent-soft); font-weight:700;}
+  .badbox{padding:12px 14px; border-radius:10px; border:1.5px solid var(--accent2); background:rgba(239,68,68,.08); font-weight:700;}
+  .diffs{font-family:ui-monospace,Menlo,monospace; font-size:12px; white-space:pre-wrap; max-height:240px; overflow:auto; background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:8px; margin-top:8px;}
+  textarea{width:100%; min-height:90px; background:var(--card2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px; font-family:ui-monospace,Menlo,monospace; font-size:12px;}
+  details summary{cursor:pointer; font-weight:700; margin-top:10px;}
+  .step-no{display:inline-flex; width:22px; height:22px; border-radius:50%; background:var(--accent); color:#fff; font-size:12px; align-items:center; justify-content:center; margin-right:6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="toprow">
+    <div><h1>🛠 관리자</h1><div class="hint" style="margin:0;"><a href="/" style="color:inherit;">← 장부로 돌아가기</a></div></div>
+  </div>
+
+  <div class="card">
+    <h2>관리자 비밀번호</h2>
+    <div class="card-body">
+      <div class="row">
+        <input type="password" id="adminPass" placeholder="ADMIN_PASSCODE" style="min-width:240px;">
+        <button id="btnStatus">연결 상태 확인</button>
+      </div>
+      <div id="statusResult" class="result"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>기존 데이터 → 새 구조 이전 (1회)</h2>
+    <div class="card-body">
+      <div class="hint" style="margin-top:0;">
+        기존 <b>latest</b> 탭의 데이터를 읽어 새 탭(days, participants, ratios, rounds, buyins, rank_results, bounty, settlement, meta)으로 옮깁니다.
+        <b>기존 latest/history 탭은 읽기만 하고 절대 수정하지 않습니다.</b> 새 탭에 이미 데이터가 있으면 이전하지 않습니다(덮어쓰기 방지).
+      </div>
+      <div style="margin-top:12px;"><span class="step-no">1</span><button class="secondary" id="btnPreview">미리보기 · 검증</button></div>
+      <details>
+        <summary>latest 탭 대신 JSON을 직접 붙여넣기 (선택)</summary>
+        <div class="hint">예전 HTML의 데이터나 "전체 데이터 다운로드" 파일 내용을 붙여넣으면 그 내용으로 이전합니다. 비워두면 latest 탭을 사용합니다.</div>
+        <textarea id="sourceJson" placeholder='{"sessions":[...]}'></textarea>
+      </details>
+      <div id="previewResult" class="result"></div>
+      <div style="margin-top:12px;"><span class="step-no">2</span><button id="btnApply" disabled>새 구조로 이전 실행</button></div>
+      <div id="applyResult" class="result"></div>
+    </div>
+  </div>
+</div>
+<div id="toastContainer"></div>
+<script src="/js/admin.js"></script>
+</body>
+</html>

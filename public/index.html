@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="홀덤 장부">
+<title>홀덤 장부</title>
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+<div id="toastContainer"></div>
+
+<div id="syncBanner" class="sync-banner" style="display:none;">
+  <span id="syncBannerText"></span>
+  <button type="button" class="secondary" id="btnSyncRetry">다시 불러오기</button>
+</div>
+
+<div class="toprow">
+  <div>
+    <h1>🃏 홀덤 장부</h1>
+    <div id="saveStatus" class="save-status"></div>
+  </div>
+  <div class="dropdown" id="moreMenuWrap">
+    <button type="button" class="secondary" id="btnMoreMenu" title="더보기">☰</button>
+    <div class="dropdown-menu" id="moreMenuList">
+      <button type="button" class="dropdown-item" id="miThemeToggle">🌙 다크 모드</button>
+      <button type="button" class="dropdown-item" id="miExport">⬇ 정산결과 다운</button>
+      <button type="button" class="dropdown-item" id="miBackupCreate">💾 백업 만들기</button>
+      <button type="button" class="dropdown-item" id="miBackupList">🗂 백업 목록 (복원)</button>
+      <button type="button" class="dropdown-item" id="miDownloadData">⬇ 전체 데이터 다운로드</button>
+    </div>
+  </div>
+</div>
+
+<div class="card daytabs-card">
+  <div class="card-body" style="padding:14px 18px;">
+    <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+      <div id="dayTabsBar" class="daytabs" style="flex:1;"></div>
+      <div class="dropdown" id="dayMoreMenuWrap">
+        <button type="button" class="secondary" id="btnDayMoreMenu" title="더보기">☰</button>
+        <div class="dropdown-menu" id="dayMoreMenuList">
+          <button type="button" class="dropdown-item" id="miAddDay">새 날짜 추가</button>
+          <button type="button" class="dropdown-item" id="miToggleHidden" style="display:none;">숨긴 날짜 보기</button>
+        </div>
+      </div>
+    </div>
+    <div id="hiddenDayTabsBar" class="daytabs" style="margin-top:8px; display:none;"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="backupCreateOverlay" style="display:none;">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>💾 백업 만들기</h3>
+      <button type="button" class="modal-close" data-close="backupCreateOverlay">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="hint" style="margin:0 0 12px;">지금 저장된 모든 날짜 데이터를 구글 시트의 backups 탭에 이름을 붙여 따로 남깁니다.</div>
+      <div class="controls" style="margin-bottom:12px;">
+        <input type="text" id="backupName" placeholder="백업 이름 (예: 10/04 시흥 정산 완료)" style="min-width:100%;">
+      </div>
+      <div class="controls">
+        <button id="btnBackupCreateConfirm">💾 백업</button>
+        <button class="secondary" data-close="backupCreateOverlay">취소</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="backupListOverlay" style="display:none;">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>🗂 백업 목록</h3>
+      <button type="button" class="modal-close" data-close="backupListOverlay">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="hint" style="margin:0 0 12px;">복원하면 모든 날짜가 그 백업 시점으로 바뀝니다. 복원 직전 상태는 자동으로 한 번 더 백업됩니다.</div>
+      <div id="backupList" class="cloud-load-list"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="passcodeOverlay" style="display:none;">
+  <div class="modal-box">
+    <div class="modal-header"><h3>🔒 비밀번호</h3></div>
+    <div class="modal-body">
+      <div class="hint" style="margin:0 0 12px;">장부를 보려면 비밀번호를 입력하세요. (이 기기에 기억됩니다)</div>
+      <div class="controls" style="margin-bottom:12px;">
+        <input type="password" id="passcodeInput" placeholder="비밀번호" style="min-width:100%;">
+      </div>
+      <div class="controls"><button id="btnPasscodeConfirm">확인</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="appRoot">
+
+<div class="flex-row">
+  <div class="flexcell">
+    <div class="card">
+      <h2>참가자</h2>
+      <div class="card-body">
+        <div class="controls">
+          <label>참가자 수</label>
+          <select id="participantCount"></select>
+        </div>
+        <div class="subhead">참가자</div>
+        <div class="tablewrap">
+          <table id="participantTable"></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flexcell">
+    <div class="card">
+      <h2>프라이즈 / 바운티 비율</h2>
+      <div class="card-body">
+        <div class="subhead">비율</div>
+        <div class="tablewrap"><table id="rankRatioTable"></table></div>
+        <div id="normalRatioBox" style="margin-top:10px; padding:10px; background:var(--card2); border:1px solid var(--border); border-radius:8px; font-size:14px;"></div>
+        <div class="warn" id="ratioWarningNormal" style="display:none;"></div>
+        <div id="bountyRatioBox" style="margin-top:10px; padding:10px; background:var(--card2); border:1px solid var(--border); border-radius:8px; font-size:14px;"></div>
+        <div class="warn" id="ratioWarning" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="roundTabsBar" class="daytabs" style="margin-bottom:16px;"></div>
+<div id="roundsContainer"></div>
+
+<div class="card">
+  <h2>최종 처리금액</h2>
+  <div class="card-body">
+    <div class="tablewrap">
+      <table id="finalTable"></table>
+    </div>
+  </div>
+  <div class="final-summary">
+    전체 참가자 합계(총 바이인 − 총 지급액) : <span id="finalCheck" class="out"></span>
+  </div>
+</div>
+
+</div><!-- /appRoot -->
+
+<script src="/js/calc.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
