@@ -62,7 +62,7 @@ function createApp(opts = {}) {
       res.json(await fn(req, res));
     } catch (e) {
       if (e instanceof StoreError) {
-        const status = { CONFLICT: 409, INVALID: 400, NOT_FOUND: 404, MIGRATION_PENDING: 409, ALREADY_MIGRATED: 409, READ_ONLY: 423, VERIFY_BEFORE_WRITE: 500, VERIFY_AFTER_WRITE: 500 }[e.code] || 500;
+        const status = { CHANGED: 409, ALREADY_SETTLED: 409, CONFLICT: 409, INVALID: 400, NOT_FOUND: 404, MIGRATION_PENDING: 409, ALREADY_MIGRATED: 409, READ_ONLY: 423, VERIFY_BEFORE_WRITE: 500, VERIFY_AFTER_WRITE: 500 }[e.code] || 500;
         return res.status(status).json({ error: e.code, message: e.message, conflicts: e.conflicts, diffs: e.diffs });
       }
       console.error('[api]', req.method, req.path, e);
@@ -79,6 +79,8 @@ function createApp(opts = {}) {
   app.get('/api/data', requireStore, requireApp, wrap(() => store.getData()));
   app.post('/api/save', requireStore, requireApp, wrap((req) => store.save(req.body)));
 
+  app.post('/api/settlements', requireStore, requireApp, wrap((req) => store.createSettlement(req.body)));
+  app.post('/api/settlements/:id/cancel', requireStore, requireApp, wrap((req) => store.cancelSettlement(req.params.id)));
   app.get('/api/backups', requireStore, requireApp, wrap(async () => ({ backups: await store.listBackups() })));
   app.post('/api/backups', requireStore, requireApp, wrap((req) => store.createBackup(String((req.body && req.body.name) || '').slice(0, 200))));
   app.post('/api/backups/:id/restore', requireStore, requireApp, wrap((req) => store.restoreBackup(req.params.id)));

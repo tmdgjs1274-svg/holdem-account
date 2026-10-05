@@ -25,6 +25,7 @@
   <div class="dropdown" id="moreMenuWrap">
     <button type="button" class="secondary" id="btnMoreMenu" title="더보기">☰</button>
     <div class="dropdown-menu" id="moreMenuList">
+      <button type="button" class="dropdown-item" id="miSettle">🧾 정산</button>
       <button type="button" class="dropdown-item" id="miThemeToggle">🌙 다크 모드</button>
       <button type="button" class="dropdown-item" id="miExport">⬇ 정산결과 다운</button>
       <button type="button" class="dropdown-item" id="miBackupCreate">💾 백업 만들기</button>
@@ -78,6 +79,40 @@
     <div class="modal-body">
       <div class="hint" style="margin:0 0 12px;">복원하면 모든 날짜가 그 백업 시점으로 바뀝니다. 복원 직전 상태는 자동으로 한 번 더 백업됩니다.</div>
       <div id="backupList" class="cloud-load-list"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="settleOverlay" style="display:none;">
+  <div class="modal-box settle-box">
+    <div class="modal-header">
+      <h3>🧾 정산</h3>
+      <button type="button" class="modal-close" data-close="settleOverlay">×</button>
+    </div>
+    <div class="settle-tabs">
+      <button type="button" class="settle-tab active" data-stab="new">새 정산</button>
+      <button type="button" class="settle-tab" data-stab="history">정산 이력</button>
+    </div>
+    <div class="modal-body" id="settleNewPane">
+      <div class="subhead">정산할 날짜 선택</div>
+      <div class="settle-actions">
+        <button type="button" class="secondary small" id="btnSettleSelectOpen">미정산 날짜 전체 선택</button>
+        <button type="button" class="secondary small" id="btnSettleSelectNone">선택 해제</button>
+      </div>
+      <div id="settleDayList" class="settle-day-list"></div>
+      <div class="subhead" style="margin-top:18px;">정산 결과 <span class="settle-hint" id="settleSummary"></span></div>
+      <div id="settleIssues"></div>
+      <div class="tablewrap"><table id="settleResultTable" class="settle-table"></table></div>
+      <div class="controls" style="margin:14px 0 10px;">
+        <input type="text" id="settleName" placeholder="정산 이름 (예: 7~9월 정산)" style="min-width:100%;">
+      </div>
+      <div class="controls">
+        <button id="btnSettleSave">✅ 정산 완료로 저장</button>
+        <button class="secondary" id="btnSettleCsv">⬇ 결과 다운(CSV)</button>
+      </div>
+    </div>
+    <div class="modal-body" id="settleHistoryPane" style="display:none;">
+      <div id="settleHistoryList"></div>
     </div>
   </div>
 </div>

@@ -652,7 +652,7 @@ function renderDayTabs(){
     if(s.hidden) return;
     const active = idx===currentSessionIndex;
     html += `<div class="daytab ${active?'active':''}" data-idx="${idx}" draggable="true">
-      <span class="daytab-label" data-idx="${idx}">${escapeHtml(s.label)}</span>
+      <span class="daytab-label" data-idx="${idx}">${escapeHtml(s.label)}</span>${settleBadgeHtml(s)}
       <div class="dtdropdown" data-idx="${idx}">
         <button type="button" class="dtbtn" data-action="togglemenu" data-idx="${idx}" title="더보기">⋯</button>
         <div class="dtdropdown-menu" data-idx="${idx}">
@@ -682,7 +682,7 @@ function renderDayTabs(){
     sessions.forEach((s,idx)=>{
       if(!s.hidden) return;
       hh += `<div class="daytab hiddenday" data-idx="${idx}">
-        <span class="daytab-label">${escapeHtml(s.label)}</span>
+        <span class="daytab-label">${escapeHtml(s.label)}</span>${settleBadgeHtml(s)}
         <div class="dtdropdown" data-idx="${idx}">
           <button type="button" class="dtbtn" data-action="togglemenu" data-idx="${idx}" title="더보기">⋯</button>
           <div class="dtdropdown-menu" data-idx="${idx}">
@@ -698,6 +698,7 @@ function renderDayTabs(){
     hiddenBar.innerHTML = '';
     hiddenBar.style.display = 'none';
   }
+  lastBadgeSig = badgeSig();
 }
 function switchToDay(idx){
   if(idx===currentSessionIndex) return;
@@ -758,7 +759,9 @@ function resetDay(idx){
 }
 function deleteDay(idx){
   if(sessions.length<=1){ alert('마지막 날짜는 삭제할 수 없습니다.'); return; }
-  if(!confirm(`'${sessions[idx].label}' 날짜를 삭제할까요? 이 날짜의 모든 입력 기록이 사라지며 되돌릴 수 없습니다.`)) return;
+  const settledRun = activeRunForDay(sessions[idx].id);
+  const settledNote = settledRun ? `\n\n이 날짜는 '${settledRun.name}' 정산에 포함되어 있습니다. 삭제해도 정산 이력(당시 금액)은 그대로 남습니다.` : '';
+  if(!confirm(`'${sessions[idx].label}' 날짜를 삭제할까요? 이 날짜의 모든 입력 기록이 사라지며 되돌릴 수 없습니다.${settledNote}`)) return;
   noteDeleted(sessions[idx]);
   sessions.splice(idx,1);
   if(currentSessionIndex===idx){
@@ -915,8 +918,8 @@ function newSession(label, state){
 }
 function isDirty(s){ return s.editSeq !== s.savedSeq; }
 function markDayDirtyNoSchedule(s){ if(s) s.editSeq++; }
-function markDayDirty(s){ markDayDirtyNoSchedule(s); scheduleSave(); }
-function markMetaDirty(){ metaDirty = true; scheduleSave(); }
+function markDayDirty(s){ markDayDirtyNoSchedule(s); scheduleSave(); refreshSettleBadgesSoon(); }
+function markMetaDirty(){ metaDirty = true; scheduleSave(); refreshSettleBadgesSoon(); }
 function noteDeleted(s){ if(s && s.version > 0) pendingDeletes.push({id: s.id, baseVersion: s.version}); }
 function hasUnsaved(){ return sessions.some(isDirty) || pendingDeletes.length > 0 || orderDirty || metaDirty; }
 function rememberCurrentDay(){ const s = sessions[currentSessionIndex]; if(s) lsSet(LS_DAY, s.id); }
@@ -1007,6 +1010,7 @@ async function loadFromServer(){
     setBanner(`서버에서 데이터를 불러오지 못해 저장을 멈춰두었습니다. 시트의 기존 데이터는 안전합니다. (${e.message})`, '다시 불러오기', ()=>reloadFromServer());
     return false;
   }
+  settlements = data.settlements || [];
   if(data.status === 'migration_pending'){
     applyServerDataset(data.dataset);
     syncBlockedReason = 'migration';
@@ -1044,10 +1048,16 @@ async function refreshIfChanged(){
   if(!syncReady || saveInFlight || hasUnsaved()) return;
   const remote = datasetSig(data.dataset.days, data.dataset.roundCount, data.dataset.roundLabels);
   const local = datasetSig(sessions, roundCount, ROUND_LABELS);
+  const settleChanged = settleSig(data.settlements || []) !== settleSig(settlements);
   if(remote !== local){
+    settlements = data.settlements || [];
     applyServerDataset(data.dataset);
     showToast('다른 기기에서 바뀐 내용을 불러왔습니다.');
+  } else if(settleChanged){
+    settlements = data.settlements || [];
+    renderDayTabs();
   }
+  if(settleChanged && isSettleOpen()) rerenderSettle();
 }
 
 function scheduleSave(){
@@ -1233,6 +1243,264 @@ function confirmPasscode(){
   loadFromServer();
 }
 
+
+/* ===================== 여러 날짜 합산 정산 =====================
+ * 선택한 날짜들의 "최종 처리금액"을 같은 이름끼리 더합니다. (계산은 calc.js의 aggregateSettlement — 서버와 같은 코드)
+ * 저장하면 시트의 정산 이력 탭에 그 시점 금액으로 남고, 포함된 날짜 탭에 '정산완료'가 표시됩니다.
+ * 정산 뒤에 그 날짜의 금액이 바뀌면 '정산 후 변경'으로 바뀝니다.
+ */
+const SETTLE_CANCELED = '취소';
+let settlements = [];
+let settleSelected = new Set();
+let settleNameTouched = false;
+let lastSettleAgg = null;
+let lastBadgeSig = '';
+let badgeTimer = null;
+
+function settleSig(runs){ return (runs || []).map(r=>`${r.id}:${r.status}`).join('|'); }
+function activeRunForDay(dayId){ return settlements.find(r=>r.status !== SETTLE_CANCELED && r.dayIds.indexOf(dayId) >= 0) || null; }
+function liveState(s){
+  return sessions.indexOf(s) === currentSessionIndex ? collectState() : (s.state || cloneState(baseDefaultState));
+}
+function calcOpts(){ return {roundCount, roundLabels: ROUND_LABELS.slice(0, roundCount)}; }
+function dayChangedSinceSettle(s, run){
+  const snap = run.details.filter(d=>d.dayId === s.id);
+  const agg = LedgerCalc.aggregateSettlement([{id: s.id, label: s.label, state: liveState(s)}], calcOpts());
+  if(agg.blocking || agg.details.length !== snap.length) return true;
+  const key = d=>`${d.slot}|${d.name}|${d.amount}`;
+  return snap.map(key).sort().join(',') !== agg.details.map(key).sort().join(',');
+}
+function settleBadgeHtml(s){
+  const run = activeRunForDay(s.id);
+  if(!run) return '';
+  if(dayChangedSinceSettle(s, run)) return `<span class="settle-badge changed" title="'${escapeHtml(run.name)}' 정산 뒤에 금액이 바뀌었습니다">정산 후 변경</span>`;
+  return `<span class="settle-badge" title="'${escapeHtml(run.name)}' 정산에 포함됨">정산완료</span>`;
+}
+function badgeSig(){
+  return sessions.map(s=>{ const r = activeRunForDay(s.id); return r ? r.id + (dayChangedSinceSettle(s, r) ? '!' : '') : ''; }).join('|');
+}
+function refreshSettleBadges(){ if(badgeSig() !== lastBadgeSig) renderDayTabs(); }
+function refreshSettleBadgesSoon(){ clearTimeout(badgeTimer); badgeTimer = setTimeout(refreshSettleBadges, 700); }
+
+function isSettleOpen(){ return document.getElementById('settleOverlay').style.display === 'flex'; }
+function openSettle(){
+  if(syncBlockedReason === 'migration'){ showToast('기존 데이터 이전을 먼저 진행해주세요.', true); return; }
+  settleSelected = new Set([...settleSelected].filter(id=>sessions.some(s=>s.id === id) && !activeRunForDay(id)));
+  showSettleTab('new');
+  openModal('settleOverlay');
+}
+function showSettleTab(t){
+  document.querySelectorAll('.settle-tab').forEach(b=>b.classList.toggle('active', b.dataset.stab === t));
+  document.getElementById('settleNewPane').style.display = t === 'new' ? '' : 'none';
+  document.getElementById('settleHistoryPane').style.display = t === 'history' ? '' : 'none';
+  if(t === 'new') renderSettleNew(); else renderSettleHistory();
+}
+function rerenderSettle(){
+  const t = document.querySelector('.settle-tab.active');
+  showSettleTab(t ? t.dataset.stab : 'new');
+}
+function selectedSettleDays(){
+  return sessions.filter(s=>settleSelected.has(s.id)).map(s=>({id: s.id, label: s.label, state: liveState(s)}));
+}
+function amountTd(n, extra){
+  const cls = n > 0 ? 'pos' : (n < 0 ? 'neg' : '');
+  return `<td class="out ${cls} ${extra || ''}">${fmtSigned(n)}</td>`;
+}
+// dayCols: [{id,label}], totals: [{name,total,byDay}] — 결과(합계)가 잘 보이도록 이름 바로 옆에 둡니다
+function settleTableHtml(dayCols, totals){
+  let h = '<tr><th style="text-align:left;">이름</th><th class="total">합계</th>' + dayCols.map(d=>`<th>${escapeHtml(d.label)}</th>`).join('') + '</tr>';
+  totals.forEach(t=>{
+    h += `<tr><td class="name">${escapeHtml(t.name)}</td>` + amountTd(t.total, 'total');
+    dayCols.forEach(d=>{ h += (t.byDay[d.id] !== undefined) ? amountTd(t.byDay[d.id]) : '<td class="out" style="color:var(--sub);">-</td>'; });
+    h += '</tr>';
+  });
+  const sums = dayCols.map(d=>totals.reduce((a, t)=>a + (t.byDay[d.id] !== undefined ? t.byDay[d.id] : 0), 0));
+  h += `<tr class="sum"><td class="name">합계</td><td class="out total">${fmtSigned(sums.reduce((a, b)=>a + b, 0))}</td>` + sums.map(v=>`<td class="out">${fmtSigned(v)}</td>`).join('') + '</tr>';
+  return h;
+}
+function similarNamePairs(names){
+  const pairs = [];
+  const norm = (x)=>x.replace(/\s+/g, '');
+  for(let i = 0; i < names.length; i++) for(let j = i + 1; j < names.length; j++){
+    const a = names[i], b = names[j];
+    const na = norm(a), nb = norm(b);
+    if(na === nb || (Math.min(na.length, nb.length) >= 2 && (na.indexOf(nb) >= 0 || nb.indexOf(na) >= 0))) pairs.push([a, b]);
+  }
+  return pairs;
+}
+function settleIssuesHtml(agg){
+  const out = [];
+  const is = agg.issues;
+  if(is.emptyNames.length) out.push(`<div class="issue block">이름이 비어있는 참가자가 있어 정산할 수 없습니다: ${is.emptyNames.map(x=>`'${escapeHtml(x.label)}' ${x.slot}번`).join(', ')}<br>날짜 탭에서 이름을 입력해주세요.</div>`);
+  if(is.duplicateNames.length) out.push(`<div class="issue block">같은 날짜에 같은 이름이 두 번 있어 정산할 수 없습니다: ${is.duplicateNames.map(x=>`'${escapeHtml(x.label)}'의 '${escapeHtml(x.name)}'`).join(', ')}</div>`);
+  if(is.unbalanced.length) out.push(`<div class="issue warn">정산 합계가 0이 아닌 날짜가 있습니다 (순위·바운티 미배정 등): ${is.unbalanced.map(x=>`'${escapeHtml(x.label)}' ${fmtSigned(x.check)}`).join(', ')}</div>`);
+  const pairs = similarNamePairs(agg.totals.map(t=>t.name));
+  if(pairs.length) out.push(`<div class="issue warn">비슷한 이름이 있습니다: ${pairs.map(p=>`'${escapeHtml(p[0])}' / '${escapeHtml(p[1])}'`).join(', ')}<br>지금은 서로 다른 사람으로 합산됩니다. 같은 사람이면 날짜 탭에서 이름을 똑같이 맞춰주세요.</div>`);
+  if(!out.length) out.push('<div class="issue info">같은 이름끼리 각 날짜의 최종 처리금액을 더한 결과입니다.</div>');
+  return out.join('');
+}
+function defaultSettleName(days){
+  if(!days.length) return '';
+  if(days.length === 1) return `${days[0].label} 정산`;
+  return `${days[0].label} ~ ${days[days.length - 1].label} 정산`;
+}
+function renderSettleNew(){
+  const list = document.getElementById('settleDayList');
+  list.innerHTML = sessions.map(s=>{
+    const run = activeRunForDay(s.id);
+    const r = LedgerCalc.computeSettlement(liveState(s), calcOpts());
+    const chips = [];
+    if(s.hidden) chips.push('<span class="chip muted">숨김</span>');
+    if(run) chips.push(`<span class="chip">정산완료 · ${escapeHtml(run.name)}</span>`);
+    else if(r.grandCheck !== 0) chips.push('<span class="chip warn">확인필요</span>');
+    return `<label class="settle-day${run ? ' disabled' : ''}">
+      <input type="checkbox" data-id="${escapeHtml(s.id)}" ${settleSelected.has(s.id) ? 'checked' : ''} ${run ? 'disabled' : ''}>
+      <span>${escapeHtml(s.label)}</span>
+      <span class="meta">${chips.join('')}<span>${r.n}명</span></span>
+    </label>`;
+  }).join('');
+  renderSettleResult();
+}
+function renderSettleResult(){
+  const days = selectedSettleDays();
+  const table = document.getElementById('settleResultTable');
+  const issuesEl = document.getElementById('settleIssues');
+  const nameEl = document.getElementById('settleName');
+  if(!settleNameTouched) nameEl.value = defaultSettleName(days);
+  if(!days.length){
+    lastSettleAgg = null;
+    table.innerHTML = '';
+    issuesEl.innerHTML = '<div class="issue info">위에서 정산할 날짜를 선택하세요.</div>';
+    document.getElementById('settleSummary').textContent = '';
+  } else {
+    const agg = LedgerCalc.aggregateSettlement(days, calcOpts());
+    lastSettleAgg = {agg, days};
+    table.innerHTML = settleTableHtml(days.map(d=>({id: d.id, label: d.label})), agg.totals);
+    issuesEl.innerHTML = settleIssuesHtml(agg);
+    document.getElementById('settleSummary').textContent = `${days.length}개 날짜 · ${agg.totals.length}명`;
+  }
+  document.getElementById('btnSettleSave').disabled = !lastSettleAgg || lastSettleAgg.agg.blocking || !syncReady;
+  document.getElementById('btnSettleCsv').disabled = !lastSettleAgg;
+}
+function downloadCsv(filename, rows){
+  const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], {type: 'text/csv;charset=utf-8;'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename.replace(/[\\/:*?"<>|]/g, '_');
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+function settleCsvRows(dayCols, totals){
+  const rows = [['이름', ...dayCols.map(d=>d.label), '합계']];
+  totals.forEach(t=>rows.push([t.name, ...dayCols.map(d=>t.byDay[d.id] !== undefined ? t.byDay[d.id] : ''), t.total]));
+  const sums = dayCols.map(d=>totals.reduce((a, t)=>a + (t.byDay[d.id] !== undefined ? t.byDay[d.id] : 0), 0));
+  rows.push(['합계', ...sums, sums.reduce((a, b)=>a + b, 0)]);
+  return rows;
+}
+async function saveSettlement(){
+  if(!lastSettleAgg) return;
+  const {agg, days} = lastSettleAgg;
+  if(agg.blocking){ showToast('이름 문제를 먼저 해결해주세요.', true); return; }
+  const name = document.getElementById('settleName').value.trim();
+  if(!name){ showToast('정산 이름을 입력해주세요.', true); return; }
+  if(agg.issues.unbalanced.length && !confirm(`정산 합계가 0이 아닌 날짜가 있습니다:\n${agg.issues.unbalanced.map(x=>`· ${x.label} (${fmtSigned(x.check)})`).join('\n')}\n\n그래도 정산 완료로 저장할까요?`)) return;
+  if(!confirm(`'${name}'\n${days.length}개 날짜, ${agg.totals.length}명의 합계를 정산 완료로 저장할까요?\n저장하면 이 날짜들에 '정산완료'가 표시됩니다.`)) return;
+  if(!(await flushSave())){ showToast('저장되지 않은 변경이 있어 정산하지 못했습니다. 잠시 후 다시 시도해주세요.', true); return; }
+  const agg2 = LedgerCalc.aggregateSettlement(selectedSettleDays(), calcOpts());
+  const expected = {};
+  agg2.totals.forEach(t=>{ expected[t.name] = t.total; });
+  const btn = document.getElementById('btnSettleSave');
+  btn.disabled = true;
+  try{
+    const r = await api('/api/settlements', {method: 'POST', body: {name, dayIds: days.map(d=>d.id), expected}});
+    settlements = r.settlements;
+    settleSelected.clear();
+    settleNameTouched = false;
+    renderDayTabs();
+    showSettleTab('history');
+    showToast(`'${name}' 정산을 저장했습니다.`);
+  }catch(e){
+    showToast('정산 저장 실패: ' + e.message, true);
+    btn.disabled = false;
+    if(e.code === 'ALREADY_SETTLED' || e.code === 'CHANGED') refreshIfChanged();
+  }
+}
+function runTotals(run){
+  const byName = {};
+  run.details.forEach(d=>{ (byName[d.name] = byName[d.name] || {})[d.dayId] = d.amount; });
+  return run.totals.map(t=>({name: t.name, total: t.total, days: t.days, byDay: byName[t.name] || {}}));
+}
+function runDayCols(run){
+  return run.dayIds.map((id, i)=>{
+    const d = run.details.find(x=>x.dayId === id);
+    return {id, label: (d && d.label) || run.dayLabels[i] || id};
+  });
+}
+function renderSettleHistory(){
+  const el = document.getElementById('settleHistoryList');
+  if(!settlements.length){ el.innerHTML = '<div class="empty-note">아직 정산 이력이 없습니다.</div>'; return; }
+  el.innerHTML = settlements.slice().reverse().map(run=>{
+    const canceled = run.status === SETTLE_CANCELED;
+    const cols = runDayCols(run);
+    const changed = canceled ? [] : cols.filter(c=>{ const s = sessions.find(x=>x.id === c.id); return !s || dayChangedSinceSettle(s, run); });
+    const chips = [canceled ? '<span class="chip muted">취소됨</span>' : '<span class="chip">정산완료</span>'];
+    if(changed.length) chips.push(`<span class="chip warn">정산 후 변경 ${changed.length}개 날짜</span>`);
+    const note = changed.length ? `<div class="issue warn">정산 뒤에 금액이 바뀌었거나 삭제된 날짜: ${changed.map(c=>`'${escapeHtml(c.label)}'${sessions.some(x=>x.id === c.id) ? '' : '(삭제됨)'}`).join(', ')}<br>아래 금액은 정산 당시 금액입니다. 다시 정산하려면 이 정산을 취소한 뒤 새로 정산하세요.</div>` : '';
+    return `<div class="settle-run${canceled ? ' canceled' : ''}">
+      <h4>${escapeHtml(run.name)} ${chips.join('')}</h4>
+      <div class="meta">${escapeHtml(formatTime(run.createdAt))} · ${cols.length}개 날짜 · ${run.totals.length}명${canceled ? ` · ${escapeHtml(formatTime(run.canceledAt))} 취소` : ''}</div>
+      ${note}
+      <div class="tablewrap"><table class="settle-table">${settleTableHtml(cols, runTotals(run))}</table></div>
+      <div class="run-actions">
+        <button type="button" class="secondary small" data-act="csv" data-id="${escapeHtml(run.id)}">⬇ CSV</button>
+        ${canceled ? '' : `<button type="button" class="secondary small" data-act="cancel" data-id="${escapeHtml(run.id)}">정산 취소</button>`}
+      </div>
+    </div>`;
+  }).join('');
+}
+async function settleHistoryClick(e){
+  const btn = e.target.closest('[data-act]');
+  if(!btn) return;
+  const run = settlements.find(r=>r.id === btn.dataset.id);
+  if(!run) return;
+  if(btn.dataset.act === 'csv'){
+    downloadCsv(`홀덤정산_합산_${run.name}.csv`, settleCsvRows(runDayCols(run), runTotals(run)));
+  } else if(btn.dataset.act === 'cancel'){
+    if(!syncReady){ showToast('서버와 동기화된 상태에서만 취소할 수 있습니다.', true); return; }
+    if(!confirm(`'${run.name}' 정산을 취소할까요?\n이력은 '취소됨'으로 남고, 포함된 날짜들은 다시 정산할 수 있게 됩니다.`)) return;
+    try{
+      const r = await api(`/api/settlements/${encodeURIComponent(run.id)}/cancel`, {method: 'POST', body: {}});
+      settlements = r.settlements;
+      renderDayTabs();
+      renderSettleHistory();
+      showToast(`'${run.name}' 정산을 취소했습니다.`);
+    }catch(err){ showToast('취소 실패: ' + err.message, true); }
+  }
+}
+function initSettle(){
+  document.querySelectorAll('.settle-tab').forEach(b=>b.addEventListener('click', ()=>showSettleTab(b.dataset.stab)));
+  document.getElementById('settleDayList').addEventListener('change', (e)=>{
+    const cb = e.target.closest('input[type=checkbox]');
+    if(!cb) return;
+    if(cb.checked) settleSelected.add(cb.dataset.id); else settleSelected.delete(cb.dataset.id);
+    renderSettleResult();
+  });
+  document.getElementById('btnSettleSelectOpen').addEventListener('click', ()=>{
+    sessions.forEach(s=>{ if(!s.hidden && !activeRunForDay(s.id)) settleSelected.add(s.id); });
+    renderSettleNew();
+  });
+  document.getElementById('btnSettleSelectNone').addEventListener('click', ()=>{ settleSelected.clear(); renderSettleNew(); });
+  document.getElementById('settleName').addEventListener('input', ()=>{ settleNameTouched = true; });
+  document.getElementById('btnSettleSave').addEventListener('click', saveSettlement);
+  document.getElementById('btnSettleCsv').addEventListener('click', ()=>{
+    if(!lastSettleAgg) return;
+    const name = document.getElementById('settleName').value.trim() || '정산';
+    downloadCsv(`홀덤정산_합산_${name}.csv`, settleCsvRows(lastSettleAgg.days.map(d=>({id: d.id, label: d.label})), lastSettleAgg.agg.totals));
+  });
+  document.getElementById('settleHistoryList').addEventListener('click', settleHistoryClick);
+}
+
 /* ===================== 시작 ===================== */
 function init(){
   applyTheme(lsGet(LS_THEME) || 'light');
@@ -1253,6 +1521,7 @@ function init(){
   document.body.addEventListener('change', onEdit);
 
   document.getElementById('btnMoreMenu').addEventListener('click', (e)=>{ e.stopPropagation(); toggleMoreMenu(); });
+  document.getElementById('miSettle').addEventListener('click', (e)=>{ e.stopPropagation(); closeMoreMenu(); openSettle(); });
   document.getElementById('miThemeToggle').addEventListener('click', (e)=>{ e.stopPropagation(); toggleTheme(); closeMoreMenu(); });
   document.getElementById('miExport').addEventListener('click', (e)=>{ e.stopPropagation(); exportCSV(); closeMoreMenu(); });
   document.getElementById('miBackupCreate').addEventListener('click', (e)=>{ e.stopPropagation(); closeMoreMenu(); openBackupCreate(); });
@@ -1267,7 +1536,8 @@ function init(){
     if(!e.target.closest('#dayMoreMenuWrap')) closeDayMoreMenu();
   });
   document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click', ()=>closeModal(b.dataset.close)));
-  ['backupCreateOverlay', 'backupListOverlay'].forEach(id=>{
+  initSettle();
+  ['backupCreateOverlay', 'backupListOverlay', 'settleOverlay'].forEach(id=>{
     document.getElementById(id).addEventListener('click', (e)=>{ if(e.target.id === id) closeModal(id); });
   });
   document.getElementById('btnBackupCreateConfirm').addEventListener('click', confirmBackupCreate);
@@ -1276,7 +1546,7 @@ function init(){
   document.getElementById('btnPasscodeConfirm').addEventListener('click', confirmPasscode);
   document.getElementById('passcodeInput').addEventListener('keydown', (e)=>{ if(e.key === 'Enter') confirmPasscode(); });
   document.addEventListener('keydown', (e)=>{
-    if(e.key === 'Escape'){ closeModal('backupCreateOverlay'); closeModal('backupListOverlay'); closeMoreMenu(); closeDayMoreMenu(); closeAllDayMenus(); }
+    if(e.key === 'Escape'){ closeModal('settleOverlay'); closeModal('backupCreateOverlay'); closeModal('backupListOverlay'); closeMoreMenu(); closeDayMoreMenu(); closeAllDayMenus(); }
   });
   document.getElementById('roundTabsBar').addEventListener('click', roundTabsClickHandler);
   document.getElementById('dayTabsBar').addEventListener('click', dayTabsClickHandler);

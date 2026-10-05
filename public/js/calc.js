@@ -139,8 +139,53 @@
     };
   }
 
+  /*
+   * 여러 날짜 합산 정산
+   * days: [{id, label, state}] (화면/시트의 날짜 순서대로)
+   * 같은 이름(앞뒤 공백 제외, 정확히 같은 글자)끼리 각 날짜의 "최종 처리금액"(화면에 보이는 반올림 금액)을 더합니다.
+   * 돈이 걸린 계산이라, 이름을 확신할 수 없는 경우는 issues로 돌려주고 저장 단계에서 막습니다.
+   */
+  function aggregateSettlement(days, opts) {
+    var details = [], perDay = [], byName = {}, order = [];
+    var issues = { emptyNames: [], duplicateNames: [], unbalanced: [] };
+    var checkSum = 0;
+    (days || []).forEach(function (day) {
+      var st = day.state || {};
+      var s = computeSettlement(st, opts);
+      var seen = {};
+      var daySum = 0;
+      s.players.forEach(function (p) {
+        var raw = Object.prototype.hasOwnProperty.call(st, 'p-name-' + p.slot) ? String(st['p-name-' + p.slot]) : '';
+        var name = raw.replace(/[\r\n]/g, '').trim();
+        if (!name) { issues.emptyNames.push({ dayId: day.id, label: day.label, slot: p.slot }); return; }
+        if (seen[name]) { issues.duplicateNames.push({ dayId: day.id, label: day.label, name: name }); return; }
+        seen[name] = true;
+        details.push({ dayId: day.id, label: day.label, slot: p.slot, name: name, amount: p.total });
+        daySum += p.total;
+        if (!byName[name]) { byName[name] = { name: name, total: 0, days: 0, byDay: {} }; order.push(name); }
+        byName[name].total += p.total;
+        byName[name].days += 1;
+        byName[name].byDay[day.id] = p.total;
+      });
+      if (s.grandCheck !== 0) issues.unbalanced.push({ dayId: day.id, label: day.label, check: s.grandCheck });
+      checkSum += daySum;
+      perDay.push({ dayId: day.id, label: day.label, players: s.n, sum: daySum, check: s.grandCheck });
+    });
+    var totals = order.map(function (n) { return byName[n]; });
+    totals.sort(function (a, b) { return b.total - a.total || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); });
+    return {
+      details: details,
+      totals: totals,
+      perDay: perDay,
+      checkSum: checkSum,
+      issues: issues,
+      blocking: issues.emptyNames.length > 0 || issues.duplicateNames.length > 0,
+    };
+  }
+
   return {
     MAXP: MAXP,
+    aggregateSettlement: aggregateSettlement,
     BUYIN_OPTIONS: BUYIN_OPTIONS,
     DEFAULT_RANKS: DEFAULT_RANKS,
     DEFAULT_BOUNTY_LEVELS: DEFAULT_BOUNTY_LEVELS,

@@ -195,3 +195,40 @@ td.namecell, th.namecell{background:var(--namecell-bg) !important; color:#fff !i
 .backup-item-actions button{padding:6px 10px; font-size:12.5px;}
 .empty-note{padding:18px; text-align:center; color:var(--sub); font-size:13.5px;}
 button:disabled{opacity:.45; cursor:not-allowed; filter:none; transform:none; box-shadow:none;}
+
+/* ---------- 정산 ---------- */
+.settle-box{width:min(960px, 100%);}
+.settle-tabs{display:flex; gap:6px; padding:14px 20px 0;}
+.settle-tab{background:transparent; color:var(--sub); border:1px solid var(--border); border-radius:999px; padding:6px 16px; font-size:13px; font-weight:700; box-shadow:none;}
+.settle-tab:hover{filter:none; transform:none; box-shadow:none; color:var(--text);}
+.settle-tab.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+.settle-actions{display:flex; gap:6px; flex-wrap:wrap; margin:8px 0 10px;}
+button.small{padding:6px 12px; font-size:12.5px;}
+.settle-day-list{display:flex; flex-direction:column; gap:2px; max-height:280px; overflow:auto; border:1px solid var(--border); border-radius:12px; padding:6px;}
+.settle-day{display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:8px; cursor:pointer; font-size:13.5px; font-weight:600;}
+.settle-day:hover{background:var(--card2);}
+.settle-day.disabled{opacity:.6; cursor:not-allowed;}
+.settle-day input{width:18px; height:18px; accent-color:var(--accent); flex:none; margin:0;}
+.settle-day .meta{display:flex; gap:6px; align-items:center; margin-left:auto; font-size:12px; color:var(--sub); font-weight:600; white-space:nowrap;}
+.chip{display:inline-block; font-size:11px; font-weight:800; padding:2px 8px; border-radius:999px; background:var(--accent-soft); color:var(--accent); white-space:nowrap;}
+.chip.warn{background:rgba(245,158,11,.16); color:var(--warn);}
+.chip.muted{background:var(--card3); color:var(--sub);}
+.settle-hint{font-size:12.5px; font-weight:600; color:var(--sub); margin-left:6px;}
+.settle-badge{font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:999px; background:rgba(34,197,94,.16); color:#16a34a; white-space:nowrap;}
+.daytab.active .settle-badge{background:rgba(255,255,255,.28); color:#fff;}
+.settle-badge.changed{background:rgba(245,158,11,.2); color:var(--warn);}
+.daytab.active .settle-badge.changed{background:#fff; color:#b45309;}
+.issue{padding:9px 12px; border-radius:10px; font-size:13px; margin:8px 0; line-height:1.55; font-weight:600;}
+.issue.block{border:1.5px solid var(--accent2); background:rgba(239,68,68,.07);}
+.issue.warn{border:1.5px solid var(--warn); background:rgba(245,158,11,.08);}
+.issue.info{border:1px solid var(--border); background:var(--card2); font-weight:500;}
+table.settle-table th, table.settle-table td{white-space:nowrap;}
+table.settle-table td.name{font-weight:700; text-align:left;}
+table.settle-table td.total, table.settle-table th.total{font-weight:800;}
+table.settle-table tr.sum td{background:var(--card2); font-weight:700;}
+.settle-run{border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin-bottom:12px;}
+.settle-run.canceled{opacity:.6;}
+.settle-run h4{margin:0; font-size:14.5px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+.settle-run .meta{font-size:12px; color:var(--sub); margin:4px 0 8px; line-height:1.5;}
+.settle-run .run-actions{display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;}
+table.settle-table th.total, table.settle-table td.total{background:var(--accent-soft);}
