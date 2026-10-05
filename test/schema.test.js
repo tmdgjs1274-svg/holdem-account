@@ -26,6 +26,7 @@ function randomState(r) {
       for (let i = 1; i <= 9; i++) maybe(`bg-${rr}-${lv}-${i}`, pick(WEIRD));
     }
   }
+  if (r() > 0.5) st['round-count'] = pick(['1', '2', '3', '4', '5', '', '03', 'x']);
   if (r() > 0.7) st['unknown-field'] = pick(WEIRD);
   if (r() > 0.8) st['p-name-12'] = '범위밖';
   return st;
@@ -77,4 +78,22 @@ test('숫자로 저장하는 값은 정확히 같은 글자로 되돌아오는 �
   assert.strictEqual(schema.toCell('Infinity'), 'Infinity');
   assert.strictEqual(schema.toCell('NaN'), 'NaN');
   assert.strictEqual(schema.toCell('9007199254740993'), '9007199254740993');
+});
+
+test('부 개수(날짜별)는 days 탭 "부 개수" 칸에 저장되고, 예전 "부 개수(참고)" 시트는 key를 만들지 않음', () => {
+  const ds = { days: [
+    { id: 'dabcdef1', label: 'A', hidden: false, version: 1, updatedAt: 'x', state: { participantCount: '4', 'bounty-ratio-input': '50', 'round-count': '2', 'gtype-1': 'bounty' } },
+    { id: 'dabcdef2', label: 'B', hidden: false, version: 1, updatedAt: 'x', state: { participantCount: '4', 'bounty-ratio-input': '50', 'gtype-1': 'bounty' } },
+  ], roundCount: 3, roundLabels: ['1부', '2부', '3부'], currentDayId: 'dabcdef1', extraMeta: {} };
+  const tabs = schema.simulateSheets(schema.encodeDataset(ds));
+  const col = tabs.days[0].indexOf('부 개수');
+  assert.ok(col > 0);
+  assert.strictEqual(tabs.days[1][col], 2);
+  assert.strictEqual(tabs.days[1][9], undefined, '보정데이터 없이 표현돼야 함');
+  // 예전 시트 형식: 머리글이 '부 개수(참고)'이고 숫자가 들어있음 → round-count key가 생기면 안 됨
+  const old = JSON.parse(JSON.stringify(tabs));
+  old.days[0][col] = '부 개수(참고)';
+  old.days[2][col] = 3;
+  const back = schema.decodeDataset(old).dataset;
+  assert.strictEqual(back.days[1].state['round-count'], undefined);
 });

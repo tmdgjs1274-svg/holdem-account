@@ -59,7 +59,9 @@
 
   function computeSettlement(state, opts) {
     var get = getter(state || {});
-    var roundCount = (opts && opts.roundCount) || 3;
+    // 부 개수는 날짜마다 따로(state['round-count']). 없으면(예전 날짜) 기본값.
+    var rcRaw = state && Object.prototype.hasOwnProperty.call(state, 'round-count') ? String(state['round-count']) : '';
+    var roundCount = /^[1-9]\d?$/.test(rcRaw) ? parseInt(rcRaw, 10) : ((opts && opts.roundCount) || 3);
     var roundLabels = (opts && opts.roundLabels) || [];
     var pc = get('participantCount');
     var n = /^[2-9]$/.test(pc) ? parseInt(pc, 10) : 0;

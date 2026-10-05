@@ -555,12 +555,15 @@ function ensureRoundsBuilt(targetCount){
     }
   }
 }
+// 부(라운드)는 날짜마다 따로 갖습니다. 추가/삭제는 지금 보고 있는 날짜에만 적용되고 다른 날짜에는 영향이 없습니다.
 function addRound(){
-  ensureRoundsBuilt(roundCount+1);
-  buildFinalTable();
+  const day = sessions[currentSessionIndex];
+  const st = collectState();
+  st[ROUND_COUNT_KEY] = String(roundCount + 1);
+  day.state = st;
+  loadDay(currentSessionIndex);
   switchRound(roundCount);
-  recalcAll();
-  markMetaDirty();
+  markDayDirty(day);
 }
 
 // 부(라운드) 삭제 시, 그 부보다 뒤에 있는 부들의 번호가 하나씩 앞으로 당겨집니다.
@@ -587,36 +590,16 @@ function remapRoundKeysInState(state, deletedRound){
 }
 function deleteRound(r){
   if(roundCount<=1){ alert('마지막 부는 삭제할 수 없습니다.'); return; }
-  if(!confirm(`'${ROUND_LABELS[r-1]}'를 삭제할까요? 이 부에 입력된 모든 날짜의 데이터가 사라지며 되돌릴 수 없습니다.`)) return;
-
-  // 1) 현재 화면의 값을 먼저 저장하고, 모든 날짜(session)의 저장된 상태를 새 번호 체계로 옮깁니다.
-  sessions[currentSessionIndex].state = collectState();
-  sessions.forEach(s=>{ s.state = remapRoundKeysInState(s.state, r); });
-
-  // 2) 라벨/바운티 등급 기본값 배열에서도 해당 부를 제거합니다.
-  ROUND_LABELS.splice(r-1, 1);
-  DEFAULT_BOUNTY_LEVELS.splice(r-1, 1);
-  roundCount--;
-  // 기본 자동 이름("N부")이던 라벨은 삭제로 밀려난 위치에 맞게 다시 번호를 매겨,
-  // 예를 들어 2부를 삭제했을 때 남은 부가 "1부, 3부, 4부"처럼 번호가 비어보이지 않고 "1부, 2부, 3부"로 이어지게 합니다.
-  for(let i=0;i<roundCount;i++){
-    if(/^\d+부$/.test(ROUND_LABELS[i])) ROUND_LABELS[i] = `${i+1}부`;
-  }
-
-  // 3) 라운드 영역 DOM을 새 번호 체계로 완전히 다시 그립니다.
-  document.getElementById('roundsContainer').innerHTML = '';
-  for(let idx=0; idx<roundCount; idx++) buildRound(idx);
-  document.querySelectorAll('#roundsContainer input, #roundsContainer select').forEach(elm=>{
-    if(elm.id) baseDefaultState[elm.id] = elm.value;
-  });
-  buildFinalTable();
-
-  // 4) 새로 그려진 DOM에 옮겨진 현재 날짜 데이터를 다시 채워넣습니다.
-  applyState(sessions[currentSessionIndex].state);
+  const day = sessions[currentSessionIndex];
+  const lbl = ROUND_LABELS[r-1] || `${r}부`;
+  if(!confirm(`'${day.label}' 날짜의 '${lbl}'를 삭제할까요?\n이 날짜의 ${lbl} 데이터만 사라지며 다른 날짜에는 영향이 없습니다. 되돌릴 수 없습니다.`)) return;
+  // 이 날짜의 값만 새 번호 체계로 옮김 (뒤의 부가 한 칸씩 앞으로)
+  const st = remapRoundKeysInState(collectState(), r);
+  st[ROUND_COUNT_KEY] = String(roundCount - 1);
+  day.state = st;
+  loadDay(currentSessionIndex);
   switchRound(Math.min(r, roundCount));
-  builtRoundSig = roundSig();
-  sessions.forEach(markDayDirtyNoSchedule);
-  markMetaDirty();
+  markDayDirty(day);
 }
 function roundTabsClickHandler(e){
   if(e.target.id === 'btnAddRound'){ addRound(); return; }
@@ -708,13 +691,17 @@ function switchToDay(idx){
 }
 function loadDay(idx){
   currentSessionIndex = idx;
-  const st = sessions[idx].state || cloneState(baseDefaultState);
+  const st = sessions[idx].state || defaultStateForRounds(defaultRoundCount);
+  const n = dayRoundCountOf(st);
+  if(n !== roundCount){ rebuildRounds(n); buildFinalTable(); }
   applyState(st);
+  document.getElementById(ROUND_COUNT_KEY).value = String(n);
+  switchRound(Math.min(Math.max(currentRoundIndex, 1), roundCount));
   renderDayTabs();
 }
 function addDay(){
   sessions[currentSessionIndex].state = collectState();
-  const s = newSession(defaultDayLabel(), cloneState(baseDefaultState));
+  const s = newSession(defaultDayLabel(), defaultStateForRounds(defaultRoundCount));
   sessions.push(s);
   loadDay(sessions.length-1);
   rememberCurrentDay();
@@ -750,11 +737,9 @@ function unhideDay(idx){
 function resetDay(idx){
   const label = sessions[idx] ? sessions[idx].label : '해당 날짜';
   if(!confirm(`'${label}'의 입력값을 모두 초기화할까요? 되돌릴 수 없습니다.`)) return;
-  if(idx === currentSessionIndex){
-    applyState(cloneState(baseDefaultState));
-  } else {
-    sessions[idx].state = cloneState(baseDefaultState);
-  }
+  const keepRounds = dayRoundCountOf(idx === currentSessionIndex ? collectState() : sessions[idx].state);
+  sessions[idx].state = defaultStateForRounds(keepRounds);
+  if(idx === currentSessionIndex) loadDay(idx);
   markDayDirty(sessions[idx]);
 }
 function deleteDay(idx){
@@ -904,6 +889,21 @@ let saveQueued = false;
 let retryDelay = 0;
 let lastSavedAt = '';
 let builtRoundSig = '';
+// 부 개수: 날짜마다 state['round-count']에 저장. 값이 없는 예전 날짜는 defaultRoundCount(시트 meta, 기본 3)로 보여줍니다.
+const ROUND_COUNT_KEY = 'round-count';
+let defaultRoundCount = 3;
+const ROUND_KEY_RE = /^(gtype|buyin|rankwin|bl-label|bl-ratio|bl-count|bg)-(\d+)/;
+function dayRoundCountOf(st){
+  const v = st && Object.prototype.hasOwnProperty.call(st, ROUND_COUNT_KEY) ? String(st[ROUND_COUNT_KEY]) : '';
+  return /^[1-9]\d?$/.test(v) ? parseInt(v, 10) : defaultRoundCount;
+}
+function defaultStateForRounds(n){
+  const st = {};
+  Object.keys(baseDefaultState).forEach(k=>{ const m = k.match(ROUND_KEY_RE); if(m && parseInt(m[2], 10) > n) return; st[k] = baseDefaultState[k]; });
+  st[ROUND_COUNT_KEY] = String(n);
+  return st;
+}
+function defaultRoundLabels(){ return Array.from({length: defaultRoundCount}, (_, i)=>ROUND_LABELS[i] || `${i+1}부`); }
 
 function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
 function lsSet(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }
@@ -971,15 +971,12 @@ function rebuildRounds(n){
 
 // 서버 데이터로 화면 전체를 교체
 function applyServerDataset(ds){
-  const n = Math.max(1, parseInt(ds.roundCount, 10) || 3);
+  defaultRoundCount = Math.max(1, parseInt(ds.roundCount, 10) || 3);
   if(Array.isArray(ds.roundLabels)) ds.roundLabels.forEach((l, i)=>{ if(typeof l === 'string' && l) ROUND_LABELS[i] = l; });
-  const wanted = n + '|' + ROUND_LABELS.slice(0, n).join('|');
-  if(wanted !== builtRoundSig) rebuildRounds(n);
-  buildFinalTable();
 
   sessions = (ds.days || []).map(d=>({id: d.id, label: d.label, hidden: !!d.hidden, version: d.version, state: d.state, editSeq: 0, savedSeq: 0}));
   pendingDeletes = []; orderDirty = false; metaDirty = false;
-  if(!sessions.length) sessions = [newSession(defaultDayLabel(), cloneState(baseDefaultState))];
+  if(!sessions.length) sessions = [newSession(defaultDayLabel(), defaultStateForRounds(defaultRoundCount))];
 
   const visibleIdx = (id)=> sessions.findIndex(s=>s.id === id && !s.hidden);
   let idx = visibleIdx(lsGet(LS_DAY));
@@ -989,7 +986,6 @@ function applyServerDataset(ds){
   }
   if(idx < 0) idx = 0;
   loadDay(idx);
-  switchRound(Math.min(Math.max(currentRoundIndex, 1), roundCount));
 }
 
 async function loadFromServer(){
@@ -1047,7 +1043,7 @@ async function refreshIfChanged(){
   if(data.status !== 'ok' || data.readOnly) return;
   if(!syncReady || saveInFlight || hasUnsaved()) return;
   const remote = datasetSig(data.dataset.days, data.dataset.roundCount, data.dataset.roundLabels);
-  const local = datasetSig(sessions, roundCount, ROUND_LABELS);
+  const local = datasetSig(sessions, defaultRoundCount, defaultRoundLabels());
   const settleChanged = settleSig(data.settlements || []) !== settleSig(settlements);
   if(remote !== local){
     settlements = data.settlements || [];
@@ -1080,7 +1076,7 @@ async function doSave(){
   };
   const sentOrder = orderDirty, sentMeta = metaDirty, sentDeletes = payload.deletes.length;
   if(sentOrder) payload.order = sessions.map(s=>s.id);
-  if(sentMeta) payload.meta = {roundCount, roundLabels: ROUND_LABELS.slice(0, roundCount)};
+  if(sentMeta) payload.meta = {roundCount: defaultRoundCount, roundLabels: defaultRoundLabels()};
   orderDirty = false; metaDirty = false;
   saveInFlight = true;
   setSaveStatus('저장 중…', 'saving');
@@ -1097,7 +1093,7 @@ async function doSave(){
     const localById = new Map(sessions.map(s=>[s.id, s]));
     const remoteChanged = (r.days || []).some(d=>{ const s = localById.get(d.id); return !s || s.version !== d.version; })
       || sessions.some(s=>s.version > 0 && !(r.days || []).some(d=>d.id === s.id))
-      || r.roundCount !== roundCount;
+      || r.roundCount !== defaultRoundCount;
     if(remoteChanged) setTimeout(refreshIfChanged, 400);
   }catch(e){
     if(sentOrder) orderDirty = true;
@@ -1219,7 +1215,7 @@ function downloadAllData(){
   sessions[currentSessionIndex].state = collectState();
   const data = {
     sessions: sessions.map(s=>({label: s.label, state: s.state || cloneState(baseDefaultState), hidden: !!s.hidden})),
-    currentSessionIndex, roundCount, roundLabels: ROUND_LABELS.slice(0, roundCount),
+    currentSessionIndex, roundCount: defaultRoundCount, roundLabels: defaultRoundLabels(),
     exportedAt: new Date().toISOString(),
   };
   const blob = new Blob([JSON.stringify(data, null, 1)], {type: 'application/json'});
@@ -1262,7 +1258,7 @@ function activeRunForDay(dayId){ return settlements.find(r=>r.status !== SETTLE_
 function liveState(s){
   return sessions.indexOf(s) === currentSessionIndex ? collectState() : (s.state || cloneState(baseDefaultState));
 }
-function calcOpts(){ return {roundCount, roundLabels: ROUND_LABELS.slice(0, roundCount)}; }
+function calcOpts(){ return {roundCount: defaultRoundCount, roundLabels: defaultRoundLabels()}; } // 날짜별 부 개수는 state['round-count']가 우선
 function dayChangedSinceSettle(s, run){
   const snap = run.details.filter(d=>d.dayId === s.id);
   const agg = LedgerCalc.aggregateSettlement([{id: s.id, label: s.label, state: liveState(s)}], calcOpts());
