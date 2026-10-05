@@ -51,6 +51,15 @@ body{
 .dropdown.open .dropdown-menu{display:flex;}
 .dropdown-item{display:block; width:100%; text-align:left; background:transparent; border:none; color:var(--text); font-size:13.5px; font-weight:600; padding:9px 12px; border-radius:8px; cursor:pointer; box-shadow:none;}
 .dropdown-item:hover{background:var(--card3); filter:none; transform:none; box-shadow:none;}
+.dropdown-item.mi-group{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+.mi-caret{font-size:11px; opacity:.6; transition:transform .15s;}
+.mi-group[aria-expanded="true"]{background:var(--card3);}
+.mi-group[aria-expanded="true"] .mi-caret{transform:rotate(90deg);}
+.mi-sub{display:flex; flex-direction:column; gap:2px; margin:2px 0 4px 10px; padding-left:8px; border-left:2px solid var(--border);}
+.mi-sub[hidden]{display:none;}
+.mi-sub .dropdown-item{font-size:13px; padding:8px 10px; white-space:nowrap;}
+#moreMenuList{min-width:236px;}
+.dropdown-item small{display:block; font-size:11px; font-weight:500; opacity:.6; margin-top:1px;}
 .dropdown-item.mi-danger{color:#f87171;}
 .dropdown-item.mi-danger:hover{background:rgba(239,68,68,.12);}
 .dropdown-item.mi-warn{color:var(--warn);}
@@ -214,10 +223,6 @@ button.small{padding:6px 12px; font-size:12.5px;}
 .chip.warn{background:rgba(245,158,11,.16); color:var(--warn);}
 .chip.muted{background:var(--card3); color:var(--sub);}
 .settle-hint{font-size:12.5px; font-weight:600; color:var(--sub); margin-left:6px;}
-.settle-badge{font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:999px; background:rgba(34,197,94,.16); color:#16a34a; white-space:nowrap;}
-.daytab.active .settle-badge{background:rgba(255,255,255,.28); color:#fff;}
-.settle-badge.changed{background:rgba(245,158,11,.2); color:var(--warn);}
-.daytab.active .settle-badge.changed{background:#fff; color:#b45309;}
 .issue{padding:9px 12px; border-radius:10px; font-size:13px; margin:8px 0; line-height:1.55; font-weight:600;}
 .issue.block{border:1.5px solid var(--accent2); background:rgba(239,68,68,.07);}
 .issue.warn{border:1.5px solid var(--warn); background:rgba(245,158,11,.08);}
@@ -232,3 +237,43 @@ table.settle-table tr.sum td{background:var(--card2); font-weight:700;}
 .settle-run .meta{font-size:12px; color:var(--sub); margin:4px 0 8px; line-height:1.5;}
 .settle-run .run-actions{display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;}
 table.settle-table th.total, table.settle-table td.total{background:var(--accent-soft);}
+
+/* ---------- 날짜 탭: 한 줄 가로 스크롤 ---------- */
+.daytabs-row{display:flex; align-items:center; gap:8px;}
+.strip-wrap{position:relative; flex:1; min-width:0;}
+.strip-wrap::before, .strip-wrap::after{content:''; position:absolute; top:0; bottom:0; width:32px; pointer-events:none; z-index:2; opacity:0; transition:opacity .15s;}
+.strip-wrap::before{left:0; background:linear-gradient(to right, var(--card) 15%, transparent);}
+.strip-wrap::after{right:0; background:linear-gradient(to left, var(--card) 15%, transparent);}
+.strip-wrap.fade-left::before, .strip-wrap.fade-right::after{opacity:1;}
+.daytabs-strip{flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; scroll-behavior:smooth; -webkit-overflow-scrolling:touch; scrollbar-width:none; padding:6px 0 12px; margin:-6px 0 -12px; overscroll-behavior-x:contain;}
+.daytabs-strip::-webkit-scrollbar{display:none;}
+.daytabs-strip .daytab{flex:none; white-space:nowrap;}
+.daytabs-strip .dtdropdown-menu{position:fixed; top:0; left:0; right:auto; margin-top:0; z-index:1200;}
+.strip-nav{flex:none; width:30px; height:30px; padding:0; border-radius:50%; background:var(--card2); color:var(--text); border:1px solid var(--border); box-shadow:none; font-size:18px; font-weight:700; line-height:1; display:none;}
+.strip-nav:hover{filter:none; transform:none; box-shadow:none; background:var(--card3);}
+.strip-nav:disabled{opacity:.3;}
+.daytabs-row.overflowing .strip-nav{display:inline-flex; align-items:center; justify-content:center;}
+.day-all-btn{flex:none; white-space:nowrap; padding:8px 12px; font-size:13px;}
+@media (max-width:600px){
+  .daytabs-row.overflowing .strip-nav{display:none;}
+  .daytabs-card > .card-body{padding:10px 12px !important;}
+  .daytabs-row{gap:6px;}
+  .daytabs-strip{gap:6px;}
+  .daytabs-strip .daytab{padding:6px 4px 6px 12px; font-size:12.5px; gap:2px;}
+  .daytabs-strip .daytab .dtbtn{padding:3px 6px;}
+  .daytabs-strip .daytab-label{display:block; max-width:96px; overflow:hidden; text-overflow:ellipsis;}
+  .daytabs-strip .daytab.active .daytab-label{max-width:150px;}
+  .day-all-btn{padding:8px 9px;}
+}
+
+/* ---------- 전체 날짜 목록 ---------- */
+.day-search{width:100%; min-width:100%; margin-bottom:10px;}
+input[type=search].day-search{background:var(--card2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px 12px; font-size:14px;}
+.day-list{display:flex; flex-direction:column; gap:2px; max-height:60vh; overflow:auto;}
+.day-list-item{display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:transparent; color:var(--text); border:none; border-radius:10px; padding:11px 12px; font-size:14px; font-weight:600; box-shadow:none; cursor:pointer;}
+.day-list-item:hover{background:var(--card2); filter:none; transform:none; box-shadow:none;}
+.day-list-item.current{background:var(--accent-soft); color:var(--accent);}
+.day-list-item .meta{margin-left:auto; font-size:12px; color:var(--sub); font-weight:600; white-space:nowrap;}
+.day-list-section{font-size:12px; font-weight:800; color:var(--sub); margin:14px 4px 4px;}
+.day-list-row{display:flex; align-items:center; gap:8px;}
+.day-list-row .day-list-item{flex:1;}

@@ -474,7 +474,8 @@ function exportCSV(){
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // 바로 해제하면 브라우저에 따라 파일명이 'download'로 바뀌거나 받기가 실패함 → 잠시 뒤 해제
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 
 /* ---------- Multi-day (session) management ---------- */
@@ -630,12 +631,13 @@ function defaultDayLabel(){
 }
 function renderDayTabs(){
   const bar = document.getElementById('dayTabsBar');
+  const prevScroll = bar.scrollLeft;
   let html = '';
   sessions.forEach((s,idx)=>{
     if(s.hidden) return;
     const active = idx===currentSessionIndex;
     html += `<div class="daytab ${active?'active':''}" data-idx="${idx}" draggable="true">
-      <span class="daytab-label" data-idx="${idx}">${escapeHtml(s.label)}</span>${settleBadgeHtml(s)}
+      <span class="daytab-label" data-idx="${idx}" title="${escapeHtml(s.label)}">${escapeHtml(s.label)}</span>
       <div class="dtdropdown" data-idx="${idx}">
         <button type="button" class="dtbtn" data-action="togglemenu" data-idx="${idx}" title="더보기">⋯</button>
         <div class="dtdropdown-menu" data-idx="${idx}">
@@ -665,7 +667,7 @@ function renderDayTabs(){
     sessions.forEach((s,idx)=>{
       if(!s.hidden) return;
       hh += `<div class="daytab hiddenday" data-idx="${idx}">
-        <span class="daytab-label">${escapeHtml(s.label)}</span>${settleBadgeHtml(s)}
+        <span class="daytab-label">${escapeHtml(s.label)}</span>
         <div class="dtdropdown" data-idx="${idx}">
           <button type="button" class="dtbtn" data-action="togglemenu" data-idx="${idx}" title="더보기">⋯</button>
           <div class="dtdropdown-menu" data-idx="${idx}">
@@ -681,7 +683,7 @@ function renderDayTabs(){
     hiddenBar.innerHTML = '';
     hiddenBar.style.display = 'none';
   }
-  lastBadgeSig = badgeSig();
+  afterDayTabsRender(prevScroll);
 }
 function switchToDay(idx){
   if(idx===currentSessionIndex) return;
@@ -769,10 +771,18 @@ function closeAllDayMenus(except){
   });
 }
 function toggleMoreMenu(){
-  document.getElementById('moreMenuWrap').classList.toggle('open');
+  const open = document.getElementById('moreMenuWrap').classList.toggle('open');
+  if(!open) setSettleGroupOpen(false);
 }
 function closeMoreMenu(){
   document.getElementById('moreMenuWrap').classList.remove('open');
+  setSettleGroupOpen(false);
+}
+function setSettleGroupOpen(open){
+  const g = document.getElementById('miSettleGroup'), sub = document.getElementById('miSettleSub');
+  if(!g || !sub) return;
+  g.setAttribute('aria-expanded', open ? 'true' : 'false');
+  sub.hidden = !open;
 }
 function toggleDayMoreMenu(){
   document.getElementById('dayMoreMenuWrap').classList.toggle('open');
@@ -788,6 +798,7 @@ function dayTabsClickHandler(e){
     const wasOpen = wrap.classList.contains('open');
     closeAllDayMenus();
     wrap.classList.toggle('open', !wasOpen);
+    if(!wasOpen) positionDayMenu(toggleBtn, wrap.querySelector('.dtdropdown-menu'));
     return;
   }
   const btn = e.target.closest('[data-action]');
@@ -918,8 +929,8 @@ function newSession(label, state){
 }
 function isDirty(s){ return s.editSeq !== s.savedSeq; }
 function markDayDirtyNoSchedule(s){ if(s) s.editSeq++; }
-function markDayDirty(s){ markDayDirtyNoSchedule(s); scheduleSave(); refreshSettleBadgesSoon(); }
-function markMetaDirty(){ metaDirty = true; scheduleSave(); refreshSettleBadgesSoon(); }
+function markDayDirty(s){ markDayDirtyNoSchedule(s); scheduleSave(); }
+function markMetaDirty(){ metaDirty = true; scheduleSave(); }
 function noteDeleted(s){ if(s && s.version > 0) pendingDeletes.push({id: s.id, baseVersion: s.version}); }
 function hasUnsaved(){ return sessions.some(isDirty) || pendingDeletes.length > 0 || orderDirty || metaDirty; }
 function rememberCurrentDay(){ const s = sessions[currentSessionIndex]; if(s) lsSet(LS_DAY, s.id); }
@@ -1250,8 +1261,6 @@ let settlements = [];
 let settleSelected = new Set();
 let settleNameTouched = false;
 let lastSettleAgg = null;
-let lastBadgeSig = '';
-let badgeTimer = null;
 
 function settleSig(runs){ return (runs || []).map(r=>`${r.id}:${r.status}`).join('|'); }
 function activeRunForDay(dayId){ return settlements.find(r=>r.status !== SETTLE_CANCELED && r.dayIds.indexOf(dayId) >= 0) || null; }
@@ -1266,18 +1275,6 @@ function dayChangedSinceSettle(s, run){
   const key = d=>`${d.slot}|${d.name}|${d.amount}`;
   return snap.map(key).sort().join(',') !== agg.details.map(key).sort().join(',');
 }
-function settleBadgeHtml(s){
-  const run = activeRunForDay(s.id);
-  if(!run) return '';
-  if(dayChangedSinceSettle(s, run)) return `<span class="settle-badge changed" title="'${escapeHtml(run.name)}' 정산 뒤에 금액이 바뀌었습니다">정산 후 변경</span>`;
-  return `<span class="settle-badge" title="'${escapeHtml(run.name)}' 정산에 포함됨">정산완료</span>`;
-}
-function badgeSig(){
-  return sessions.map(s=>{ const r = activeRunForDay(s.id); return r ? r.id + (dayChangedSinceSettle(s, r) ? '!' : '') : ''; }).join('|');
-}
-function refreshSettleBadges(){ if(badgeSig() !== lastBadgeSig) renderDayTabs(); }
-function refreshSettleBadgesSoon(){ clearTimeout(badgeTimer); badgeTimer = setTimeout(refreshSettleBadges, 700); }
-
 function isSettleOpen(){ return document.getElementById('settleOverlay').style.display === 'flex'; }
 function openSettle(){
   if(syncBlockedReason === 'migration'){ showToast('기존 데이터 이전을 먼저 진행해주세요.', true); return; }
@@ -1348,6 +1345,7 @@ function renderSettleNew(){
     const chips = [];
     if(s.hidden) chips.push('<span class="chip muted">숨김</span>');
     if(run) chips.push(`<span class="chip">정산완료 · ${escapeHtml(run.name)}</span>`);
+    if(run && dayChangedSinceSettle(s, run)) chips.push('<span class="chip warn">정산 후 변경</span>');
     else if(r.grandCheck !== 0) chips.push('<span class="chip warn">확인필요</span>');
     return `<label class="settle-day${run ? ' disabled' : ''}">
       <input type="checkbox" data-id="${escapeHtml(s.id)}" ${settleSelected.has(s.id) ? 'checked' : ''} ${run ? 'disabled' : ''}>
@@ -1497,6 +1495,135 @@ function initSettle(){
   document.getElementById('settleHistoryList').addEventListener('click', settleHistoryClick);
 }
 
+
+/* ===================== 날짜 탭: 한 줄 스크롤 + 전체 날짜 목록 ===================== */
+function setStripScroll(bar, left){
+  const prev = bar.style.scrollBehavior;
+  bar.style.scrollBehavior = 'auto';
+  bar.scrollLeft = left;
+  bar.style.scrollBehavior = prev;
+}
+function ensureActiveTabVisible(smooth){
+  const bar = document.getElementById('dayTabsBar');
+  const act = bar.querySelector('.daytab.active');
+  if(!act) return;
+  const pad = 36;
+  let target = null;
+  // 탭이 보이는 폭보다 넓으면(좁은 화면) 탭 앞부분이 보이게 맞춤
+  if(act.offsetWidth + pad * 2 > bar.clientWidth) target = Math.max(0, act.offsetLeft - Math.max(0, (bar.clientWidth - act.offsetWidth) / 2));
+  else if(act.offsetLeft - pad < bar.scrollLeft) target = Math.max(0, act.offsetLeft - pad);
+  else if(act.offsetLeft + act.offsetWidth + pad > bar.scrollLeft + bar.clientWidth) target = act.offsetLeft + act.offsetWidth + pad - bar.clientWidth;
+  if(target === null) return;
+  if(smooth) bar.scrollTo({left: target, behavior: 'smooth'}); else setStripScroll(bar, target);
+}
+function updateStripState(){
+  const bar = document.getElementById('dayTabsBar');
+  const wrap = document.getElementById('dayStripWrap');
+  const row = wrap.parentElement;
+  const max = bar.scrollWidth - bar.clientWidth;
+  const overflowing = max > 2;
+  row.classList.toggle('overflowing', overflowing);
+  wrap.classList.toggle('fade-left', overflowing && bar.scrollLeft > 2);
+  wrap.classList.toggle('fade-right', overflowing && bar.scrollLeft < max - 2);
+  document.getElementById('btnDayPrev').disabled = !(bar.scrollLeft > 2);
+  document.getElementById('btnDayNext').disabled = !(bar.scrollLeft < max - 2);
+}
+function afterDayTabsRender(prevScroll){
+  const bar = document.getElementById('dayTabsBar');
+  setStripScroll(bar, prevScroll || 0);
+  ensureActiveTabVisible(false);
+  updateStripState();
+  const n = sessions.filter(s=>!s.hidden).length;
+  document.getElementById('allDaysCount').textContent = String(n);
+  document.getElementById('btnAllDays').title = `전체 날짜 ${n}개${sessions.length > n ? ` (숨긴 날짜 ${sessions.length - n}개)` : ''}`;
+  if(isAllDaysOpen()) renderAllDays();
+}
+// 탭의 ⋯ 메뉴는 스크롤 영역 밖으로 띄워서(화면 기준) 잘리지 않게 합니다.
+function positionDayMenu(btn, menu){
+  if(!menu) return;
+  const r = btn.getBoundingClientRect();
+  const w = menu.offsetWidth || 160, h = menu.offsetHeight || 180;
+  let left = Math.min(r.right - w, window.innerWidth - w - 8);
+  left = Math.max(8, left);
+  let top = r.bottom + 6;
+  if(top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+}
+// 탭 줄이 스크롤되거나 창 크기가 바뀌면 열린 ⋯ 메뉴를 버튼 위치로 따라 옮깁니다. (버튼이 안 보이게 되면 닫음)
+function repositionOpenDayMenu(){
+  const w = document.querySelector('.dtdropdown.open');
+  if(!w) return;
+  const btn = w.querySelector('[data-action="togglemenu"]');
+  const bar = w.closest('.daytabs-strip');
+  if(bar){
+    const br = bar.getBoundingClientRect(), r = btn.getBoundingClientRect();
+    if(r.right < br.left + 4 || r.left > br.right - 4){ closeAllDayMenus(); return; }
+  }
+  positionDayMenu(btn, w.querySelector('.dtdropdown-menu'));
+}
+function scrollDayStrip(dir){
+  const bar = document.getElementById('dayTabsBar');
+  bar.scrollBy({left: dir * Math.max(160, bar.clientWidth * 0.7), behavior: 'smooth'});
+}
+
+function isAllDaysOpen(){ return document.getElementById('allDaysOverlay').style.display === 'flex'; }
+function openAllDays(){
+  const q = document.getElementById('allDaysSearch');
+  q.value = '';
+  openModal('allDaysOverlay');
+  renderAllDays();
+  const cur = document.querySelector('#allDaysList .day-list-item.current');
+  if(cur) cur.scrollIntoView({block: 'center'});
+  if(window.matchMedia('(hover: hover)').matches) q.focus();
+}
+function renderAllDays(){
+  const norm = (x)=>String(x).toLowerCase().replace(/\s+/g, '');
+  const q = norm(document.getElementById('allDaysSearch').value);
+  const match = (s)=> !q || norm(s.label).indexOf(q) >= 0;
+  const people = (s)=>{ const v = parseInt((s === sessions[currentSessionIndex] ? collectState() : (s.state || {}))['participantCount'], 10); return v ? `${v}명` : ''; };
+  const visible = sessions.map((s, idx)=>({s, idx})).filter(x=>!x.s.hidden && match(x.s));
+  const hidden = sessions.map((s, idx)=>({s, idx})).filter(x=>x.s.hidden && match(x.s));
+  let h = visible.map(({s, idx})=>`<button type="button" class="day-list-item${idx === currentSessionIndex ? ' current' : ''}" data-idx="${idx}">
+      <span>${escapeHtml(s.label)}</span><span class="meta">${idx === currentSessionIndex ? '보는 중 · ' : ''}${people(s)}</span></button>`).join('');
+  if(hidden.length){
+    h += `<div class="day-list-section">숨긴 날짜 (${hidden.length})</div>` + hidden.map(({s, idx})=>`<div class="day-list-row">
+      <button type="button" class="day-list-item" data-idx="${idx}" data-hidden="1" style="opacity:.65;"><span>${escapeHtml(s.label)}</span><span class="meta">${people(s)}</span></button>
+      <button type="button" class="secondary small" data-unhide="${idx}">숨김 해제</button></div>`).join('');
+  }
+  if(!visible.length && !hidden.length) h = '<div class="empty-note">검색 결과가 없습니다.</div>';
+  document.getElementById('allDaysList').innerHTML = h;
+}
+function allDaysClick(e){
+  const un = e.target.closest('[data-unhide]');
+  if(un){ unhideDay(parseInt(un.dataset.unhide, 10)); renderAllDays(); return; }
+  const item = e.target.closest('.day-list-item');
+  if(!item) return;
+  const idx = parseInt(item.dataset.idx, 10);
+  if(item.dataset.hidden){
+    if(!confirm(`'${sessions[idx].label}'은(는) 숨긴 날짜입니다. 숨김을 해제하고 열까요?`)) return;
+    unhideDay(idx);
+  }
+  closeModal('allDaysOverlay');
+  switchToDay(idx);
+  ensureActiveTabVisible(true);
+}
+function initDayStrip(){
+  const bar = document.getElementById('dayTabsBar');
+  bar.addEventListener('scroll', ()=>{ updateStripState(); repositionOpenDayMenu(); }, {passive: true});
+  document.getElementById('hiddenDayTabsBar').addEventListener('scroll', repositionOpenDayMenu, {passive: true});
+  window.addEventListener('resize', ()=>{ updateStripState(); repositionOpenDayMenu(); });
+  window.addEventListener('scroll', repositionOpenDayMenu, {passive: true});
+  document.getElementById('btnDayPrev').addEventListener('click', ()=>scrollDayStrip(-1));
+  document.getElementById('btnDayNext').addEventListener('click', ()=>scrollDayStrip(1));
+  document.getElementById('btnAllDays').addEventListener('click', (e)=>{ e.stopPropagation(); openAllDays(); });
+  document.getElementById('allDaysSearch').addEventListener('input', renderAllDays);
+  document.getElementById('allDaysSearch').addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter'){ const first = document.querySelector('#allDaysList .day-list-item:not([data-hidden])'); if(first) first.click(); }
+  });
+  document.getElementById('allDaysList').addEventListener('click', allDaysClick);
+}
+
 /* ===================== 시작 ===================== */
 function init(){
   applyTheme(lsGet(LS_THEME) || 'light');
@@ -1517,6 +1644,7 @@ function init(){
   document.body.addEventListener('change', onEdit);
 
   document.getElementById('btnMoreMenu').addEventListener('click', (e)=>{ e.stopPropagation(); toggleMoreMenu(); });
+  document.getElementById('miSettleGroup').addEventListener('click', (e)=>{ e.stopPropagation(); setSettleGroupOpen(document.getElementById('miSettleSub').hidden); });
   document.getElementById('miSettle').addEventListener('click', (e)=>{ e.stopPropagation(); closeMoreMenu(); openSettle(); });
   document.getElementById('miThemeToggle').addEventListener('click', (e)=>{ e.stopPropagation(); toggleTheme(); closeMoreMenu(); });
   document.getElementById('miExport').addEventListener('click', (e)=>{ e.stopPropagation(); exportCSV(); closeMoreMenu(); });
@@ -1533,7 +1661,8 @@ function init(){
   });
   document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click', ()=>closeModal(b.dataset.close)));
   initSettle();
-  ['backupCreateOverlay', 'backupListOverlay', 'settleOverlay'].forEach(id=>{
+  initDayStrip();
+  ['backupCreateOverlay', 'backupListOverlay', 'settleOverlay', 'allDaysOverlay'].forEach(id=>{
     document.getElementById(id).addEventListener('click', (e)=>{ if(e.target.id === id) closeModal(id); });
   });
   document.getElementById('btnBackupCreateConfirm').addEventListener('click', confirmBackupCreate);
@@ -1542,7 +1671,7 @@ function init(){
   document.getElementById('btnPasscodeConfirm').addEventListener('click', confirmPasscode);
   document.getElementById('passcodeInput').addEventListener('keydown', (e)=>{ if(e.key === 'Enter') confirmPasscode(); });
   document.addEventListener('keydown', (e)=>{
-    if(e.key === 'Escape'){ closeModal('settleOverlay'); closeModal('backupCreateOverlay'); closeModal('backupListOverlay'); closeMoreMenu(); closeDayMoreMenu(); closeAllDayMenus(); }
+    if(e.key === 'Escape'){ closeModal('allDaysOverlay'); closeModal('settleOverlay'); closeModal('backupCreateOverlay'); closeModal('backupListOverlay'); closeMoreMenu(); closeDayMoreMenu(); closeAllDayMenus(); }
   });
   document.getElementById('roundTabsBar').addEventListener('click', roundTabsClickHandler);
   document.getElementById('dayTabsBar').addEventListener('click', dayTabsClickHandler);

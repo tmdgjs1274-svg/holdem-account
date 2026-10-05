@@ -25,20 +25,26 @@
   <div class="dropdown" id="moreMenuWrap">
     <button type="button" class="secondary" id="btnMoreMenu" title="더보기">☰</button>
     <div class="dropdown-menu" id="moreMenuList">
-      <button type="button" class="dropdown-item" id="miSettle">🧾 정산</button>
+      <button type="button" class="dropdown-item mi-group" id="miSettleGroup" aria-expanded="false" aria-controls="miSettleSub">🧾 정산관리<span class="mi-caret">▸</span></button>
+      <div class="mi-sub" id="miSettleSub" hidden>
+        <button type="button" class="dropdown-item" id="miSettle">🧮 정산 (새 정산 · 이력)</button>
+        <button type="button" class="dropdown-item" id="miExport" title="지금 보고 있는 날짜의 최종 처리금액표를 CSV로 받습니다">⬇ 정산결과 다운<small>보는 날짜 CSV</small></button>
+        <button type="button" class="dropdown-item" id="miBackupCreate">💾 백업 만들기</button>
+        <button type="button" class="dropdown-item" id="miBackupList">🗂 백업 목록 (복원)</button>
+        <button type="button" class="dropdown-item" id="miDownloadData" title="모든 날짜 데이터를 JSON 파일(예전 HTML과 같은 형식)로 받습니다. 관리자 페이지에서 다시 가져올 수 있습니다">⬇ 전체 데이터 다운로드<small>전체 JSON</small></button>
+      </div>
       <button type="button" class="dropdown-item" id="miThemeToggle">🌙 다크 모드</button>
-      <button type="button" class="dropdown-item" id="miExport">⬇ 정산결과 다운</button>
-      <button type="button" class="dropdown-item" id="miBackupCreate">💾 백업 만들기</button>
-      <button type="button" class="dropdown-item" id="miBackupList">🗂 백업 목록 (복원)</button>
-      <button type="button" class="dropdown-item" id="miDownloadData">⬇ 전체 데이터 다운로드</button>
     </div>
   </div>
 </div>
 
 <div class="card daytabs-card">
   <div class="card-body" style="padding:14px 18px;">
-    <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-      <div id="dayTabsBar" class="daytabs" style="flex:1;"></div>
+    <div class="daytabs-row">
+      <button type="button" class="strip-nav" id="btnDayPrev" aria-label="이전 날짜들" title="이전">‹</button>
+      <div class="strip-wrap" id="dayStripWrap"><div id="dayTabsBar" class="daytabs daytabs-strip"></div></div>
+      <button type="button" class="strip-nav" id="btnDayNext" aria-label="다음 날짜들" title="다음">›</button>
+      <button type="button" class="secondary day-all-btn" id="btnAllDays" title="전체 날짜 목록">📅 <span id="allDaysCount">0</span></button>
       <div class="dropdown" id="dayMoreMenuWrap">
         <button type="button" class="secondary" id="btnDayMoreMenu" title="더보기">☰</button>
         <div class="dropdown-menu" id="dayMoreMenuList">
@@ -47,7 +53,7 @@
         </div>
       </div>
     </div>
-    <div id="hiddenDayTabsBar" class="daytabs" style="margin-top:8px; display:none;"></div>
+    <div id="hiddenDayTabsBar" class="daytabs daytabs-strip" style="margin-top:8px; display:none;"></div>
   </div>
 </div>
 
@@ -79,6 +85,19 @@
     <div class="modal-body">
       <div class="hint" style="margin:0 0 12px;">복원하면 모든 날짜가 그 백업 시점으로 바뀝니다. 복원 직전 상태는 자동으로 한 번 더 백업됩니다.</div>
       <div id="backupList" class="cloud-load-list"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="allDaysOverlay" style="display:none;">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>📅 전체 날짜</h3>
+      <button type="button" class="modal-close" data-close="allDaysOverlay">×</button>
+    </div>
+    <div class="modal-body">
+      <input type="search" id="allDaysSearch" class="day-search" placeholder="검색 (예: 부평, 10.25)" autocomplete="off">
+      <div id="allDaysList" class="day-list"></div>
     </div>
   </div>
 </div>
