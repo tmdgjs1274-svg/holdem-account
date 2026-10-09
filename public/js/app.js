@@ -13,6 +13,9 @@ const DEFAULT_RANKS = [
   {label:'3등', ratio:5, normalRatio:10},
   {label:'-', ratio:0, normalRatio:0},
 ];
+// 새로 만드는 부(부 추가 / 새 날짜 / 초기화)에 넣는 바운티 기본값 — 모든 부 공통
+const NEW_ROUND_BOUNTY_LEVELS = [ {label:'A상',ratio:40,count:1}, {label:'K상',ratio:20,count:2}, {label:'Q상',ratio:10,count:2}, {label:'꽝',ratio:0,count:5} ];
+// 예전 기본값: 값이 저장되지 않은 예전 날짜를 보여줄 때만 씁니다 (calc.js와 동일해야 하며, 바꾸면 기존 날짜의 표시·계산이 달라집니다)
 const DEFAULT_BOUNTY_LEVELS = [
   [ {label:'A상',ratio:45,count:1}, {label:'K상',ratio:30,count:2}, {label:'Q상',ratio:25,count:3}, {label:'꽝',ratio:0,count:30} ],
   [ {label:'A상',ratio:60,count:1}, {label:'K상',ratio:30,count:2}, {label:'Q상',ratio:10,count:4}, {label:'꽝',ratio:0,count:11} ],
@@ -557,10 +560,20 @@ function ensureRoundsBuilt(targetCount){
   }
 }
 // 부(라운드)는 날짜마다 따로 갖습니다. 추가/삭제는 지금 보고 있는 날짜에만 적용되고 다른 날짜에는 영향이 없습니다.
+function applyNewRoundBountyDefaults(st, r){
+  NEW_ROUND_BOUNTY_LEVELS.forEach((lvl, lv)=>{
+    st[`bl-label-${r}-${lv}`] = lvl.label;
+    st[`bl-ratio-${r}-${lv}`] = String(lvl.ratio);
+    st[`bl-count-${r}-${lv}`] = String(lvl.count);
+  });
+  return st;
+}
 function addRound(){
   const day = sessions[currentSessionIndex];
   const st = collectState();
   st[ROUND_COUNT_KEY] = String(roundCount + 1);
+  // 새 부의 바운티 정보는 새 기본값으로 (값을 state에 직접 넣어 저장·서버 계산과 일치)
+  applyNewRoundBountyDefaults(st, roundCount + 1);
   day.state = st;
   loadDay(currentSessionIndex);
   switchRound(roundCount);
@@ -911,6 +924,7 @@ function dayRoundCountOf(st){
 function defaultStateForRounds(n){
   const st = {};
   Object.keys(baseDefaultState).forEach(k=>{ const m = k.match(ROUND_KEY_RE); if(m && parseInt(m[2], 10) > n) return; st[k] = baseDefaultState[k]; });
+  for(let r=1;r<=n;r++) applyNewRoundBountyDefaults(st, r);
   st[ROUND_COUNT_KEY] = String(n);
   return st;
 }
